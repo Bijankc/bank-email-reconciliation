@@ -4,9 +4,10 @@
 -- All money columns are INTEGER paisa (rupees * 100). No REAL columns: float
 -- arithmetic on money is a defect, and these balances carry two decimals.
 
-DROP TABLE IF EXISTS gaps;
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS accounts;
+-- Deliberately no DROP TABLE. This same file is applied with --remote against
+-- the real database, where a re-run must fail loudly rather than silently
+-- destroy the projection. To reset the LOCAL database, delete .wrangler/ and
+-- re-run `npm run db:local`.
 
 CREATE TABLE accounts (
   account_id             TEXT PRIMARY KEY,
