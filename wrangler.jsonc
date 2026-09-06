@@ -1,0 +1,79 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // ---------------------------------------------------------------------------
+  // NO CLOUDFLARE ACCOUNT IS ATTACHED TO THIS PROJECT YET.
+  // Everything runs under local emulation: `wrangler dev` with no --remote.
+  // Any value that becomes account-scoped is marked `PLACEHOLDER` below.
+  //
+  // Remote resources that must be created before a first deploy, in order:
+  //   1. d1        bank-recon          -> fills in `database_id` below
+  //   2. r2        bank-recon-audit    -> PRIVATE, see the r2_buckets note
+  //   3. queue     txn-events
+  //   4. queue     txn-events-dlq
+  //   5. secret    SIMULATOR_TOKEN
+  //   6. domain + Email Routing rule    (last; needs a purchased domain)
+  // The exact commands are in docs/CLOUDFLARE_SETUP.md.
+  // ---------------------------------------------------------------------------
+  "name": "bank-email-reconciliation",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+
+  // One Worker exports all three handlers:
+  //   fetch() - dashboard API + the /webhook simulator ingress
+  //   email() - real bank-email ingress via Email Routing
+  //   queue() - the consumer that audits to R2 and drives the ledger DO
+  "queues": {
+    "producers": [
+      { "binding": "TXN_QUEUE", "queue": "txn-events" }
+    ],
+    "consumers": [
+      {
+        "queue": "txn-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        // Poison events stop blocking the pipeline and land here instead.
+        "dead_letter_queue": "txn-events-dlq"
+      }
+    ]
+  },
+
+  // SQLite-backed DO: an account ledger never goes terminal, so the event log
+  // has to be an indexed table, not a JSON blob rewritten on every event.
+  "durable_objects": {
+    "bindings": [
+      { "name": "ACCOUNT_LEDGER", "class_name": "AccountLedger" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AccountLedger"] }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bank-recon",
+      // PLACEHOLDER - replace after account creation.
+      // `wrangler d1 create bank-recon` prints the real uuid. Local
+      // `wrangler dev` never reads this value, so the placeholder is inert
+      // until the first remote command. See docs/CLOUDFLARE_SETUP.md step 3.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+
+  // PRIVATE BUCKET - DO NOT MAKE PUBLIC.
+  // This bucket stores raw bank emails verbatim: real names, real account
+  // numbers, real balances, real merchants. It must never have a public custom
+  // domain attached and must never have r2.dev public access enabled.
+  // README screenshots and other demo assets that are too large for git go in a
+  // SEPARATE public bucket named `bank-recon-assets`, never in this one.
+  "r2_buckets": [
+    { "binding": "AUDIT", "bucket_name": "bank-recon-audit" }
+  ]
+
+  // Email Routing is configured in the Cloudflare dashboard (route an address at
+  // your domain to this Worker). Receiving mail needs no binding block here -
+  // only the exported email() handler. Sending or forwarding onward would need a
+  // send_email binding; this Worker does neither.
+}
