@@ -119,3 +119,25 @@ Wrangler parses the config and runs `wrangler dev` locally with it unchanged,
 because local emulation never reads that field — so the placeholder costs
 nothing until the moment it must be replaced, which is documented in
 `docs/CLOUDFLARE_SETUP.md`.
+
+### 0.9 `compatibility_date` is 2026-08-22, not the 2026-09-01 in the spec sketch
+
+**Decision.** `wrangler.jsonc` pins `compatibility_date: "2026-08-22"`.
+
+**Rejected.** The `2026-09-01` in the spec's config sketch; and keeping that date
+while overriding it to an older one for tests only.
+
+**Reason.** The `workerd` build bundled with `@cloudflare/vitest-pool-workers`
+supports dates up to `2026-08-22`, while the one wrangler ships is newer. With
+`2026-09-01` the test runner refuses to start every worker with
+`This Worker requires compatibility date "2026-09-01", but the newest date
+supported by this server binary is "2026-08-22"` and the run hangs with no test
+output.
+
+Overriding the date for tests only would have kept the sketch's number, but then
+the suite would be exercising a different runtime contract than the deployed
+Worker — the one thing a compatibility date exists to prevent. Pinning both to a
+date the whole toolchain supports keeps tests and production identical, which
+matters more than matching a number in a sketch. Raise it once the pool's
+`workerd` catches up; nothing in the project depends on behaviour introduced
+between those two dates.

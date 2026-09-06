@@ -16,7 +16,7 @@
   // ---------------------------------------------------------------------------
   "name": "bank-email-reconciliation",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-01",
+  "compatibility_date": "2026-08-22",
   "observability": { "enabled": true },
 
   // One Worker exports all three handlers:
