@@ -47,3 +47,50 @@ confirm it contains no attribution string.
 - `docs/DEFERRED.md` records anything that can only be verified against a
   deployed Cloudflare account: what must be checked, how, and what result
   proves it.
+
+## 4. No Cloudflare account: local emulation only
+
+There is **no Cloudflare account attached to this project.** Through every build
+phase:
+
+- Never run `wrangler login`.
+- Never create remote resources (`d1 create`, `r2 bucket create`,
+  `queues create`, `secret put`) and never run any command with `--remote`.
+- Never run `wrangler deploy`.
+- Everything is verified under local emulation: `wrangler dev` (which runs
+  Miniflare locally) and `vitest` with `@cloudflare/vitest-pool-workers`.
+
+Consequences that must be respected:
+
+- Every account-scoped id in `wrangler.jsonc` is a literal placeholder carrying
+  a `// PLACEHOLDER - replace after account creation` comment. Never substitute
+  a real or invented-but-plausible id.
+- `docs/CLOUDFLARE_SETUP.md` is the ordered runbook the owner executes once an
+  account exists: every wrangler command with real arguments, every dashboard
+  action, every placeholder and its replacement. Keep it current as bindings
+  change — it is written to be executed without re-deriving anything.
+- Anything that cannot be verified locally goes in `docs/DEFERRED.md` with the
+  exact check and the result that proves it. **Never mark a deferred row
+  verified.** It is verified when the owner runs it against a real account, not
+  before.
+- `POST /webhook` is the ingress path that must work end to end locally. The
+  `email()` handler is unit-tested against a synthetic `ForwardableEmailMessage`
+  built from a redacted fixture; Email Routing itself is the last thing wired
+  and depends on a domain that has not been purchased.
+
+## 5. Demo assets
+
+- Screenshots and GIFs live in `docs/images/` and are referenced from the README
+  by relative path. They are committed.
+- Any single asset over 5MB goes in a **separate public** R2 bucket named
+  `bank-recon-assets`. Never in `bank-recon-audit` — that bucket holds raw bank
+  emails, stays private, has no public custom domain, and has `r2.dev` access
+  disabled.
+- **Do not add Cloudflare Images.** It is a paid product and would contradict
+  the README's cost disclosure, which names exactly one paid dependency (the
+  domain). R2 free tier only.
+- Every screenshot is taken against seeded fixture data with invented account
+  labels, merchants, balances, and references. The underlying data is fake — do
+  not blur or crop real data to hide it.
+- Phase 6 verifies that every image URL in the README resolves and that the
+  audit bucket is not publicly reachable.
