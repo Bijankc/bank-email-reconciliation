@@ -46,5 +46,12 @@ export interface QueuedTxnMessage {
   raw: string;
   /** "eml" for real email, "json" for simulator events. Picks the R2 key suffix. */
   raw_format: "eml" | "json";
+  /**
+   * True when `raw` was cut to fit the queue message limit. The transaction
+   * facts are unaffected; only the archived artifact is incomplete, and it is
+   * flagged here and in the R2 object metadata so the audit trail never claims
+   * to be verbatim when it is not.
+   */
+  raw_truncated: boolean;
   received_at: string;
 }
