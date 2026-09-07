@@ -169,6 +169,31 @@ curl -s https://bank-email-reconciliation.<subdomain>.workers.dev/health
 # and simulator_token "configured"
 ```
 
+Then prove the async path end to end, which is what Phase 2 built (this is
+deferred rows D5, D16 and D17):
+
+```bash
+HOST=https://bank-email-reconciliation.<subdomain>.workers.dev
+TOKEN=<the value you generated above>
+
+curl -s -X POST "$HOST/webhook"   -H "authorization: Bearer $TOKEN"   -H "content-type: application/json"   -d '{"account_id":"NABIL:220XXXXXX881904","bank":"NABIL","direction":"DEBIT",
+       "amount_paisa":200000,"reported_balance_paisa":806055,
+       "occurred_at":"2026-03-12T16:45:00Z","reference":"55123909QqRs"}'
+# expect HTTP 202 and {"accepted":true,"event_id":"NABIL:55123909QqRs",...}
+```
+
+With `npx wrangler tail` running in another terminal you should see, within a
+few seconds, `queue.received` and then `audit.written` carrying the key
+`raw/NABIL:220XXXXXX881904/NABIL:55123909QqRs.json`. Fetch the object to
+confirm the audit store really has it:
+
+```bash
+npx wrangler r2 object get bank-recon-audit   "raw/NABIL:220XXXXXX881904/NABIL:55123909QqRs.json" --remote --file=./audit-check.json
+```
+
+Re-POST the identical body once more: the second pass must log `audit.exists`
+rather than `audit.written`. That is write-once holding on real R2.
+
 A `503` with `simulator_token: "unset"` means the secret did not land —
 `/webhook` fails closed by design rather than accepting unauthenticated writes.
 
