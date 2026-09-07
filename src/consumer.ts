@@ -3,8 +3,8 @@ import type { QueuedTxnMessage } from "./types";
 
 /**
  * Queue consumer. Delivery is at-least-once, so every step here must be safe to
- * repeat: the R2 key is derived from the event and written once, and from
- * Phase 3 the ledger dedups on event_id.
+ * repeat: the R2 key is derived from the event and written once, and the ledger
+ * dedups on the event_id primary key.
  *
  * The failure split is the point of this file (spec 9):
  *
@@ -66,7 +66,29 @@ export async function handleQueueBatch(
         }),
       );
 
-      // Phase 3 calls the ledger DO here, with the audit object already durable.
+      // The ledger is reached only after the artifact is durable, so a failure
+      // between the two retries against evidence that is already stored.
+      const stub = env.ACCOUNT_LEDGER.get(
+        env.ACCOUNT_LEDGER.idFromName(event.account_id),
+      );
+      const applied = await stub.apply(event);
+
+      console.log(
+        JSON.stringify({
+          at: "ledger.applied",
+          message_id: message.id,
+          event_id: event.event_id,
+          account_id: event.account_id,
+          outcome: applied.outcome,
+          delivery_count: applied.delivery_count,
+          version: applied.state.version,
+          reconciliation_status: applied.state.reconciliation_status,
+          event_count: applied.state.event_count,
+          open_gap_count: applied.state.open_gap_count,
+        }),
+      );
+
+      // Phase 4 writes applied.state to D1 here, guarded on version.
       message.ack();
     } catch (error) {
       console.error(
