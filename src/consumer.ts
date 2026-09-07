@@ -1,4 +1,5 @@
 import { writeAudit } from "./audit";
+import { projectAccount, projectTransaction } from "./projection";
 import type { QueuedTxnMessage } from "./types";
 
 /**
@@ -88,7 +89,38 @@ export async function handleQueueBatch(
         }),
       );
 
-      // Phase 4 writes applied.state to D1 here, guarded on version.
+      // The read model. The account row goes first: both transactions and gaps
+      // carry a foreign key to it, so on the first event for an account there
+      // is nothing to attach to until it exists.
+      const projected = await projectAccount(env, applied.state);
+
+      // Written even when the account projection was superseded. A superseded
+      // write means a newer version already wrote the account row, so the
+      // foreign key holds; and this row is per-event history rather than
+      // versioned state, so skipping it would drop a transaction from the
+      // timeline permanently. This is also the only place that knows which R2
+      // object holds the raw bytes.
+      await projectTransaction(env, event, {
+        outcome: applied.outcome,
+        delivery_count: applied.delivery_count,
+        raw_r2_key: audit.key,
+        received_at: message.body.received_at,
+      });
+
+      if (!projected.applied) {
+        // Not an error. Another delivery for this account got there first with
+        // a newer version, and this write was correctly discarded.
+        console.log(
+          JSON.stringify({
+            at: "projection.superseded",
+            event_id: event.event_id,
+            account_id: event.account_id,
+            version: projected.version,
+            stored_version: projected.storedVersion,
+          }),
+        );
+      }
+
       message.ack();
     } catch (error) {
       console.error(
