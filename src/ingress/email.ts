@@ -1,4 +1,4 @@
-import type { QueuedTxnMessage } from "../types";
+import { parseBankEmail, type ParseOutcome } from "../parse";
 
 /**
  * Real ingress: Cloudflare Email Routing delivers a forwarded bank alert here.
@@ -7,8 +7,7 @@ import type { QueuedTxnMessage } from "../types";
  * email() handler stalls delivery. Reconciliation happens asynchronously in the
  * queue consumer.
  *
- * Phase 0 reads and characterises the message only; the NIMB and Nabil parsers
- * land in Phase 1 and the enqueue in Phase 2.
+ * Phase 1 reads and parses; the enqueue lands in Phase 2.
  */
 
 export interface ReceivedEmail {
@@ -66,11 +65,11 @@ export async function receiveEmail(
 export async function handleEmail(
   message: ForwardableEmailMessage,
   _env: Env,
-): Promise<void> {
+): Promise<ParseOutcome> {
   const received = await receiveEmail(message);
 
-  // Deliberately does not log `raw`: it carries account numbers and balances,
-  // and Workers logs are not the right home for them.
+  // Deliberately does not log `raw`: it carries the full account number and
+  // balance history, and Workers logs are not the right home for them.
   console.log(
     JSON.stringify({
       at: "email.received",
@@ -81,6 +80,26 @@ export async function handleEmail(
     }),
   );
 
-  // Phase 1 parses, Phase 2 enqueues a QueuedTxnMessage here.
-  void (null as QueuedTxnMessage | null);
+  const outcome = await parseBankEmail(received.raw);
+
+  if (!outcome.ok) {
+    console.warn(
+      JSON.stringify({
+        at: "email.parse_failed",
+        from: received.from,
+        bank: outcome.bank,
+        field: outcome.field,
+        message: outcome.message,
+      }),
+    );
+    return outcome;
+  }
+
+  // Phase 1 logs the normalized event in full so the parse can be inspected in
+  // `wrangler dev`. Phase 2 enqueues it and drops this back to a summary line -
+  // the balance does not belong in a persistent log once it is no longer the
+  // thing being verified.
+  console.log(JSON.stringify({ at: "email.parsed", event: outcome.event }));
+
+  return outcome;
 }
