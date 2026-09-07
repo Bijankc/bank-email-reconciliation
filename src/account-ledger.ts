@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { evaluateChain, type ChainMarks } from "./chain";
+import { projectAccount } from "./projection";
 import type { Bank, Direction, TxnEvent } from "./types";
 
 /**
@@ -72,7 +74,7 @@ export interface GapRecord {
 }
 
 /** One event plus what the chain says about the adjacency that ends at it. */
-export interface TimelineEntry {
+export interface TimelineEntry extends ChainMarks {
   event_id: string;
   occurred_at: string;
   direction: Direction;
@@ -82,10 +84,6 @@ export interface TimelineEntry {
   reference: string | null;
   applied_at: string;
   deliveries: number;
-  /** Null for the first event: an anchor has nothing before it to chain from. */
-  expected_balance_paisa: number | null;
-  delta_paisa: number | null;
-  chains: boolean | null;
   gap_id: string | null;
 }
 
@@ -123,14 +121,6 @@ export interface LedgerSnapshot extends LedgerState {
 
 const encoder = new TextEncoder();
 
-/** CREDIT adds, DEBIT subtracts. The amount itself is always positive. */
-function signedMovement(event: {
-  direction: Direction;
-  amount_paisa: number;
-}): number {
-  return event.direction === "CREDIT" ? event.amount_paisa : -event.amount_paisa;
-}
-
 /**
  * A gap is identified by the pair of events it sits between, so re-detecting
  * the same gap finds the same row instead of opening a second one. The pair is
@@ -151,40 +141,6 @@ async function deriveGapId(after: string, before: string): Promise<string> {
     .slice(0, 8)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-}
-
-/**
- * Order events that share an occurred_at.
- *
- * Nabil stamps its alerts to the minute, so two transactions in the same minute
- * carry identical timestamps and the log alone cannot say which came first. The
- * arbitrary choice is not neutral: pick wrong and two perfectly consistent
- * transactions produce a gap that never existed, which is the fastest way for a
- * reconciliation tool to stop being believed.
- *
- * So the balances are used to recover the order. Starting from the balance the
- * chain has already reached, repeatedly take whichever tied event chains from
- * it. When no arrangement chains - a genuine gap inside the tie - the remainder
- * keeps event_id order, which is deterministic, and the mismatch is reported.
- */
-function arrangeTie(group: EventRow[], anchorBalance: number | null): EventRow[] {
-  if (anchorBalance === null || group.length < 2) return group;
-
-  const remaining = [...group];
-  const ordered: EventRow[] = [];
-  let balance = anchorBalance;
-
-  for (;;) {
-    const index = remaining.findIndex(
-      (event) => event.reported_balance_paisa === balance + signedMovement(event),
-    );
-    if (index === -1) break;
-    const [picked] = remaining.splice(index, 1);
-    ordered.push(picked);
-    balance = picked.reported_balance_paisa;
-  }
-
-  return [...ordered, ...remaining];
 }
 
 export class AccountLedger extends DurableObject<Env> {
@@ -306,59 +262,26 @@ export class AccountLedger extends DurableObject<Env> {
    * from the events they are meant to summarize.
    */
   private timeline(): TimelineEntry[] {
-    const rows = this.db
-      .exec<EventRow>(
-        `SELECT * FROM events ORDER BY occurred_at ASC, event_id ASC;`,
-      )
-      .toArray();
-
-    const ordered: EventRow[] = [];
-    let index = 0;
-    while (index < rows.length) {
-      let end = index;
-      while (end < rows.length && rows[end].occurred_at === rows[index].occurred_at) {
-        end += 1;
-      }
-      const group = rows.slice(index, end);
-      const anchor =
-        ordered.length > 0
-          ? ordered[ordered.length - 1].reported_balance_paisa
-          : null;
-      ordered.push(...arrangeTie(group, anchor));
-      index = end;
-    }
+    const rows = this.db.exec<EventRow>(`SELECT * FROM events;`).toArray();
+    const evaluated = evaluateChain(rows);
 
     const gapByPair = new Map<string, string>();
     for (const gap of this.allGaps()) {
-      gapByPair.set(`${gap.after_event_id}\u0000${gap.before_event_id}`, gap.gap_id);
+      gapByPair.set(
+        `${gap.after_event_id} ${gap.before_event_id}`,
+        gap.gap_id,
+      );
     }
 
-    return ordered.map((event, position) => {
-      if (position === 0) {
-        // The first event is an anchor: its reported balance is ground truth
-        // with nothing prior to check it against.
-        return {
-          ...event,
-          expected_balance_paisa: null,
-          delta_paisa: null,
-          chains: null,
-          gap_id: null,
-        };
-      }
-
-      const previous = ordered[position - 1];
-      const expected = previous.reported_balance_paisa + signedMovement(event);
-      const delta = event.reported_balance_paisa - expected;
-
-      return {
-        ...event,
-        expected_balance_paisa: expected,
-        delta_paisa: delta,
-        chains: delta === 0,
-        gap_id:
-          gapByPair.get(`${previous.event_id}\u0000${event.event_id}`) ?? null,
-      };
-    });
+    return evaluated.map((entry, position) => ({
+      ...entry,
+      gap_id:
+        position === 0
+          ? null
+          : gapByPair.get(
+              `${evaluated[position - 1].event_id} ${entry.event_id}`,
+            ) ?? null,
+    })) as TimelineEntry[];
   }
 
   private allGaps(): GapRecord[] {
@@ -685,10 +608,16 @@ export class AccountLedger extends DurableObject<Env> {
       );
     }
 
-    // Phase 4 re-projects to D1 from here: the alarm changes state with no
-    // queue message behind it, so it is the one transition the consumer cannot
-    // project on its own.
     await this.scheduleAlarm();
+
+    if (due.length > 0) {
+      // The object projects itself here, which it does nowhere else. Every other
+      // state change arrives on a queue message and the consumer projects it
+      // afterwards; this one has no message behind it, so if the alarm did not
+      // write to D1 the dashboard would keep showing PENDING_REVIEW until the
+      // account's next transaction happened to arrive.
+      await projectAccount(this.env, this.buildState());
+    }
   }
 
   /**
