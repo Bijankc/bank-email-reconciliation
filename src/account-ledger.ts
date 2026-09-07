@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { evaluateChain, type ChainMarks } from "./chain";
+import { evaluateChain, pairKey, type ChainMarks } from "./chain";
 import { projectAccount } from "./projection";
 import type { Bank, Direction, TxnEvent } from "./types";
 
@@ -128,9 +128,9 @@ const encoder = new TextEncoder();
  * (spec 8), and a bank reference is not guaranteed to be path-safe. The cost is
  * an opaque id; the bounding event ids are columns, so nothing is lost.
  *
- * The NUL separator is the same trick the hash-derived event_id uses: without
- * it, two different pairs can produce the same input string and therefore the
- * same gap.
+ * The pair is encoded rather than concatenated. Without that, two different
+ * pairs can produce the same input string and therefore the same gap id, which
+ * would merge two unrelated gaps into one row.
  */
 async function deriveGapId(after: string, before: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -268,7 +268,7 @@ export class AccountLedger extends DurableObject<Env> {
     const gapByPair = new Map<string, string>();
     for (const gap of this.allGaps()) {
       gapByPair.set(
-        `${gap.after_event_id} ${gap.before_event_id}`,
+        pairKey(gap.after_event_id, gap.before_event_id),
         gap.gap_id,
       );
     }
@@ -279,7 +279,7 @@ export class AccountLedger extends DurableObject<Env> {
         position === 0
           ? null
           : gapByPair.get(
-              `${evaluated[position - 1].event_id} ${entry.event_id}`,
+              pairKey(evaluated[position - 1].event_id, entry.event_id),
             ) ?? null,
     })) as TimelineEntry[];
   }

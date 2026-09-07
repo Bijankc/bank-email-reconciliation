@@ -137,3 +137,19 @@ export function evaluateChain<T extends ChainEvent>(
     };
   });
 }
+
+/**
+ * A pair of event ids as a single unambiguous string, used both as a map key
+ * and as the material for the gap id hash.
+ *
+ * JSON encoding rather than joining on a separator: any separator has to be a
+ * character that cannot occur in a bank reference, and a claim like that ages
+ * badly. Encoding removes the assumption - ("a", "b:c") and ("a:b", "c") cannot
+ * collide - and keeps the source plain ASCII.
+ */
+export function pairKey(
+  after: string | null,
+  before: string | null,
+): string {
+  return JSON.stringify([after, before]);
+}
