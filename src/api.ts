@@ -223,3 +223,36 @@ export async function acceptGap(
     },
   };
 }
+
+/**
+ * POST /api/accounts/:id/force-window - close the resolution window now.
+ *
+ * The fast-forward the simulator panel needs (spec 10). It lands here rather
+ * than in the simulator phase because the re-anchor control cannot be
+ * demonstrated at all without it: accepting requires a CONFIRMED_GAP, and
+ * reaching one otherwise means waiting 48 hours.
+ *
+ * It is not a shortcut around the lifecycle. It runs the same promotion the
+ * alarm runs, so what a demo shows is the real transition rather than a mock of
+ * it, and it is bearer-authenticated because it changes recorded state.
+ */
+export async function forceWindow(
+  env: Env,
+  accountId: string,
+): Promise<{ status: number; body: unknown }> {
+  const stub = env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(accountId));
+  const state = await stub.forceWindow();
+  const projected = await projectAccount(env, state);
+
+  return {
+    status: 200,
+    body: {
+      account_id: accountId,
+      version: state.version,
+      reconciliation_status: state.reconciliation_status,
+      open_gap_count: state.open_gap_count,
+      gaps: state.gaps,
+      projected: projected.applied,
+    },
+  };
+}

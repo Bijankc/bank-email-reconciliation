@@ -1,5 +1,6 @@
 import {
   acceptGap,
+  forceWindow,
   getAccount,
   getAuthoritativeAccount,
   listAccounts,
@@ -162,6 +163,21 @@ export default {
       if (path.length === 4 && path[3] === "audit") {
         return json(await listAudit(env, accountId));
       }
+    }
+
+    // POST /api/accounts/:id/force-window
+    if (
+      request.method === "POST" &&
+      path.length === 4 &&
+      path[0] === "api" &&
+      path[1] === "accounts" &&
+      path[3] === "force-window"
+    ) {
+      const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
+      if (!auth.ok) return json({ error: auth.reason }, auth.status);
+
+      const result = await forceWindow(env, segment(2));
+      return json(result.body, result.status);
     }
 
     // POST /api/accounts/:id/gaps/:gapId/accept
