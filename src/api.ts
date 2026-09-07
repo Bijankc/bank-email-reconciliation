@@ -1,6 +1,7 @@
 import { keySegment } from "./audit";
 import type { GapStatus, ReconciliationStatus } from "./account-ledger";
 import { evaluateChain, pairKey } from "./chain";
+import { projectAccount } from "./projection";
 import type { Direction } from "./types";
 
 /**
@@ -170,5 +171,55 @@ export async function listAudit(env: Env, accountId: string): Promise<unknown> {
       received_at: object.customMetadata?.received_at ?? null,
       truncated: object.customMetadata?.truncated === "true",
     })),
+  };
+}
+
+/**
+ * POST /api/accounts/:id/gaps/:gapId/accept - re-anchor (spec 6.5).
+ *
+ * The only write in the dashboard, and the only operation in the system that
+ * asks a human to take responsibility for a number. It records the delta as an
+ * accepted discontinuity with a reason attached, which is why the reason is
+ * required rather than optional: a gap accepted without one is indistinguishable
+ * later from a gap accepted by accident.
+ */
+export async function acceptGap(
+  env: Env,
+  accountId: string,
+  gapId: string,
+  reason: string | null,
+): Promise<{ status: number; body: unknown }> {
+  if (reason === null || reason.trim() === "") {
+    return {
+      status: 422,
+      body: { error: "a reason is required to accept a gap" },
+    };
+  }
+
+  const stub = env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(accountId));
+  const result = await stub.acceptGap(gapId, reason.trim());
+
+  if (!result.ok) {
+    // 409, not 404: the gap may well exist, just not in a state that can be
+    // accepted. The message says which.
+    return { status: 409, body: { error: result.error } };
+  }
+
+  // Project immediately rather than waiting for the account's next transaction.
+  // This change came in over HTTP, not on the queue, so nothing else will carry
+  // it to the read model - the same reason the alarm projects itself.
+  const projected = await projectAccount(env, result.state);
+
+  return {
+    status: 200,
+    body: {
+      accepted: true,
+      gap: result.gap,
+      account_id: accountId,
+      version: result.state.version,
+      reconciliation_status: result.state.reconciliation_status,
+      open_gap_count: result.state.open_gap_count,
+      projected: projected.applied,
+    },
   };
 }

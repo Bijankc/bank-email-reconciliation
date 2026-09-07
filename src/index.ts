@@ -1,4 +1,5 @@
 import {
+  acceptGap,
   getAccount,
   getAuthoritativeAccount,
   listAccounts,
@@ -161,6 +162,36 @@ export default {
       if (path.length === 4 && path[3] === "audit") {
         return json(await listAudit(env, accountId));
       }
+    }
+
+    // POST /api/accounts/:id/gaps/:gapId/accept
+    if (
+      request.method === "POST" &&
+      path.length === 6 &&
+      path[0] === "api" &&
+      path[1] === "accounts" &&
+      path[3] === "gaps" &&
+      path[5] === "accept"
+    ) {
+      // Bearer-authenticated like /webhook: this one writes, and it writes the
+      // fact that a human accepted a discrepancy.
+      const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
+      if (!auth.ok) return json({ error: auth.reason }, auth.status);
+
+      let body: { reason?: unknown } = {};
+      try {
+        body = (await request.json()) as { reason?: unknown };
+      } catch {
+        return json({ error: "body must be valid JSON" }, 400);
+      }
+
+      const result = await acceptGap(
+        env,
+        segment(2),
+        segment(4),
+        typeof body.reason === "string" ? body.reason : null,
+      );
+      return json(result.body, result.status);
     }
 
     return json({ error: "not found", path: url.pathname }, 404);

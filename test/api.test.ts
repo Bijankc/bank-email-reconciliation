@@ -2,7 +2,7 @@ import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { handleQueueBatch } from "../src/consumer";
 import type { TxnEvent } from "../src/types";
-import { makeQueueBatch, makeQueuedMessage } from "./helpers";
+import { AUTH_HEADER, makeQueueBatch, makeQueuedMessage } from "./helpers";
 
 /**
  * The dashboard read surface, driven through the real consumer so the rows it
@@ -257,5 +257,106 @@ describe("routing", () => {
       method: "POST",
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("POST /api/accounts/:id/gaps/:gapId/accept", () => {
+  const REANCHOR = "NIMB:099XX7755";
+
+  async function openConfirmedGap(): Promise<string> {
+    await ingest(
+      event("r1", REANCHOR, "2026-03-12T09:00:00Z", 100000, 900000),
+      event("r3", REANCHOR, "2026-03-12T11:00:00Z", 2500, 892500),
+    );
+    const stub = env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(REANCHOR));
+    const state = await stub.forceWindow();
+    return state.gaps[0].gap_id;
+  }
+
+  it("rejects an unauthenticated accept", async () => {
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}/gaps/x/accept`,
+      { method: "POST", body: JSON.stringify({ reason: "no token" }) },
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("requires a reason", async () => {
+    // A gap accepted without one is indistinguishable later from a gap accepted
+    // by accident.
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}/gaps/x/accept`,
+      {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "   " }),
+      },
+    );
+
+    expect(response.status).toBe(422);
+  });
+
+  it("accepts a confirmed gap and projects the result immediately", async () => {
+    const gapId = await openConfirmedGap();
+
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}/gaps/${gapId}/accept`,
+      {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "statement checked by hand" }),
+      },
+    );
+    const body = await response.json<{
+      accepted: boolean;
+      reconciliation_status: string;
+      projected: boolean;
+    }>();
+
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    expect(body.reconciliation_status).toBe("RECONCILED");
+    // The change arrived over HTTP, not on the queue, so nothing else would
+    // carry it to the read model.
+    expect(body.projected).toBe(true);
+
+    const projected = await (
+      await SELF.fetch(`https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}`)
+    ).json<{
+      account: { reconciliation_status: string; open_gap_count: number };
+      gaps: { status: string; accept_reason: string }[];
+    }>();
+
+    expect(projected.account.reconciliation_status).toBe("RECONCILED");
+    expect(projected.account.open_gap_count).toBe(0);
+    // Recorded, not erased.
+    expect(projected.gaps[0].status).toBe("ACCEPTED_GAP");
+    expect(projected.gaps[0].accept_reason).toBe("statement checked by hand");
+  });
+
+  it("409s a gap that is still pending", async () => {
+    const pendingAccount = "NIMB:099XX7766";
+    await ingest(
+      event("q1", pendingAccount, "2026-03-12T09:00:00Z", 100000, 900000),
+      event("q3", pendingAccount, "2026-03-12T11:00:00Z", 2500, 892500),
+    );
+    const detail = await (
+      await SELF.fetch(
+        `https://example.com/api/accounts/${encodeURIComponent(pendingAccount)}`,
+      )
+    ).json<{ gaps: { gap_id: string }[] }>();
+
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(pendingAccount)}/gaps/${detail.gaps[0].gap_id}/accept`,
+      {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "too soon" }),
+      },
+    );
+
+    // 409, not 404: the gap exists, just not in a state that can be accepted.
+    expect(response.status).toBe(409);
   });
 });

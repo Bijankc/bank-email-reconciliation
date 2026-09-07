@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bank reconciliation</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>Bank reconciliation</h1>
+      <p class="sub">
+        Balance chain over forwarded bank email.
+        <span id="poll-state" class="poll">polling</span>
+      </p>
+    </header>
+
+    <main>
+      <section id="accounts-view">
+        <h2>Accounts</h2>
+        <p class="hint">
+          Read from the D1 projection, refreshed every few seconds. An account
+          that has just received a transaction may briefly show the previous
+          balance: that is the replication lag, not a stale page.
+        </p>
+        <table class="grid" id="accounts-table">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Bank</th>
+              <th class="num">Balance</th>
+              <th>Status</th>
+              <th class="num">Open gaps</th>
+              <th class="num">Version</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-body">
+            <tr class="empty">
+              <td colspan="6">Loading&hellip;</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="detail-view" hidden>
+        <p><a href="#" id="back-link" class="back">&larr; All accounts</a></p>
+
+        <div class="detail-head">
+          <div>
+            <h2 id="detail-title">Account</h2>
+            <p class="hint" id="detail-sub"></p>
+          </div>
+          <div class="toggle">
+            <label>
+              <input type="checkbox" id="authoritative-toggle" />
+              Read the ledger directly
+            </label>
+            <p class="hint" id="source-note"></p>
+          </div>
+        </div>
+
+        <div class="cards" id="summary-cards"></div>
+
+        <h3>Gaps</h3>
+        <div id="gaps"></div>
+
+        <h3>Timeline</h3>
+        <p class="hint">
+          Ordered by the time the bank stamped, not the order the email arrived.
+          Each row is checked against the one above it: the balance after this
+          transaction should equal the balance before it plus the movement.
+        </p>
+        <table class="grid" id="timeline-table">
+          <thead>
+            <tr>
+              <th>Occurred</th>
+              <th>Direction</th>
+              <th class="num">Amount</th>
+              <th class="num">Balance</th>
+              <th>Merchant</th>
+              <th>Chain</th>
+            </tr>
+          </thead>
+          <tbody id="timeline-body"></tbody>
+        </table>
+
+        <h3>Audit</h3>
+        <p class="hint">
+          The raw payload for every event, archived to R2 before anything
+          reconciled it. Keys and metadata only; the bodies are bank email.
+        </p>
+        <div id="audit"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

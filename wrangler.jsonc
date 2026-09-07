@@ -19,6 +19,16 @@
   "compatibility_date": "2026-08-22",
   "observability": { "enabled": true },
 
+  // The dashboard is served by this same Worker as static assets rather than by
+  // a separate Pages project. One deploy, one origin, so the browser calls
+  // /api/... same-origin and there is no CORS layer to configure or explain.
+  // A request that matches a file here is served from the edge without invoking
+  // the Worker; everything else falls through to fetch(), which is what keeps
+  // /api and /webhook working. See docs/DECISIONS.md 5.1.
+  "assets": {
+    "directory": "./public"
+  },
+
   // One Worker exports all three handlers:
   //   fetch() - dashboard API + the /webhook simulator ingress
   //   email() - real bank-email ingress via Email Routing
