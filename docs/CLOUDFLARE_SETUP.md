@@ -200,6 +200,27 @@ A `503` with `simulator_token: "unset"` means the secret did not land —
 
 ---
 
+## Step 6b - The dashboard is part of the Worker
+
+There is **no separate Pages project to create.** `public/` is configured as the
+Worker's static assets in `wrangler.jsonc`, so `wrangler deploy` ships the
+dashboard and the API together on one origin. After Step 6:
+
+```bash
+curl -sI https://bank-email-reconciliation.<subdomain>.workers.dev/ | head -3
+# expect 200 and content-type: text/html
+```
+
+Then open that URL in a browser. This is deferred rows D24 and D25.
+
+The dashboard reads are unauthenticated (see D22). Before forwarding real bank
+email, put Cloudflare Access in front of the Worker route: dashboard -> Zero
+Trust -> Access -> Applications -> Add an application -> Self-hosted, with the
+Worker hostname, and a policy allowing your own email. Free tier, no code
+change. The re-anchor endpoint stays bearer-authenticated underneath it.
+
+---
+
 ## Step 7 — Domain and Email Routing (LAST; costs money)
 
 This is the only paid dependency in the project (~$10/yr) and the only step that
