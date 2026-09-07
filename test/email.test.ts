@@ -84,7 +84,7 @@ describe("receiveEmail", () => {
 });
 
 describe("handleEmail", () => {
-  it("parses a forwarded NIMB alert into a normalized event", async () => {
+  it("parses a forwarded NIMB alert and queues it", async () => {
     const message = makeEmailMessage({
       from: "donot_reply@nimb.com.np",
       to: "alerts@example.invalid",
@@ -95,6 +95,8 @@ describe("handleEmail", () => {
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
+    expect(outcome.queued).toBe(true);
+    expect(outcome.raw_truncated).toBe(false);
     expect(outcome.event.event_id).toBe("NIMB:88213047qLmT");
     expect(outcome.event.reported_balance_paisa).toBe(731055);
   });
@@ -114,10 +116,11 @@ describe("handleEmail", () => {
     expect(outcome.event.source_channel).toBe("email");
   });
 
-  it("reports an unparseable message instead of throwing", async () => {
+  it("reports an unparseable message instead of throwing, and queues nothing", async () => {
     // Email Routing has already accepted the message by the time email() runs,
     // so throwing here would only lose it. A newsletter that slipped through the
-    // forwarding rule has to be a recorded outcome.
+    // forwarding rule is a permanent failure: retrying it would fail the same
+    // way five times on its way to the dead-letter queue.
     const message = makeEmailMessage({
       from: "newsletter@example.invalid",
       to: "alerts@example.invalid",
@@ -127,5 +130,26 @@ describe("handleEmail", () => {
     const outcome = await handleEmail(message, env);
 
     expect(outcome.ok).toBe(false);
+  });
+
+  it("lets an enqueue failure propagate rather than dropping the transaction", async () => {
+    // A queue send failure is infrastructure, not bad input. Swallowing it
+    // would lose a real debit; throwing fails the invocation, which is the only
+    // signal left once the message has been accepted.
+    const broken = {
+      TXN_QUEUE: {
+        send: async () => {
+          throw new Error("queue unavailable");
+        },
+      },
+    } as unknown as Env;
+
+    const message = makeEmailMessage({
+      from: "donot_reply@nimb.com.np",
+      to: "alerts@example.invalid",
+      raw: nimbFixture,
+    });
+
+    await expect(handleEmail(message, broken)).rejects.toThrow("queue unavailable");
   });
 });
