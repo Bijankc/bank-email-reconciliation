@@ -418,3 +418,172 @@ the relationship is inverted: the body is a hand-written approximation of an
 event, and the validated result is what actually entered the system. Archiving
 the body would store unvalidated extras and omit every field that validation
 filled in, leaving the audit trail describing something the ledger never saw.
+
+## Phase 3 — the ledger Durable Object
+
+### 3.1 Same-minute transactions are ordered by the balances, not by an arbitrary key
+
+**Decision.** Events that tie on `occurred_at` are arranged by walking the
+balance chain: starting from the balance already reached, repeatedly take
+whichever tied event chains from it. When no arrangement chains, the remainder
+keeps `event_id` order, which is deterministic, and the mismatch is reported
+normally.
+
+**Rejected.** Sorting ties by `event_id`, by arrival order, or by
+`reported_balance_paisa`.
+
+**Reason.** Nabil stamps its alerts to the minute, so two transactions in the
+same minute are genuinely indistinguishable in the log. The arbitrary tiebreaks
+are not neutral: order two consistent transactions the wrong way round and the
+chain reports a gap that never existed, which is the fastest way for a
+reconciliation tool to stop being believed. Sorting by balance looks principled
+and is not - for two debits the balance descends, for two credits it ascends, so
+no fixed direction is correct.
+
+The balances are the only evidence in the data about which order actually
+happened, so they are what gets used. The cost is a theoretical false negative:
+a real gap inside a tie group could be hidden if the tied events happen to chain
+in some other order, which requires the missing transaction to be exactly
+compensated by a reordering. That is a much smaller risk than routinely
+inventing gaps, and it is bounded to events sharing a timestamp.
+
+This was raised with the owner as an open question at the Phase 2 checkpoint and
+implemented as proposed.
+
+### 3.2 A filled gap is deleted, not moved to a fourth status
+
+**Decision.** When a `PENDING_GAP` stops failing - either the adjacency now
+chains or a late event landed between its two bounding events - the row is
+removed.
+
+**Rejected.** A `CLOSED_GAP` status alongside the three in the spec.
+
+**Reason.** The lifecycle table in spec 6.3 shows *(closed)* as leaving the
+lifecycle, not as a fourth state, and the schema CHECK constraint lists exactly
+three. A closed gap is not a gap: keeping the row would mean every consumer of
+`open_gap_count` and `reconciliation_status` has to remember to exclude it, and
+one that forgets reports a permanently unreconciled account. What happened is
+still recoverable from the event log and the R2 artifacts, which is where the
+history belongs.
+
+### 3.3 A gap is keyed by its bounding pair, and the key is hashed
+
+**Decision.** `gap_id` is the first 16 hex characters of
+`sha256(after_event_id + " " + before_event_id)`.
+
+**Rejected.** Concatenating the two event ids, and allocating a random id.
+
+**Reason.** Deriving from the pair is what makes gap detection idempotent: the
+full recompute that runs on every insert re-detects the same gap and finds the
+same row, instead of opening a second one and doubling the open count. A random
+id would lose that.
+
+Hashing rather than concatenating is because `gap_id` travels in a URL path
+segment (spec 8, the accept endpoint), and the ids it is built from contain a
+bank reference that nothing guarantees is path-safe. The cost is an opaque id;
+`after_event_id` and `before_event_id` are columns, so no information is lost.
+
+### 3.4 The whole chain is recomputed on every insert
+
+**Decision.** Each applied event triggers a full walk of the account's event log
+and a full reconciliation of the gaps table against it.
+
+**Rejected.** Patching only the two adjacencies the new event creates.
+
+**Reason.** The targeted version has to get four things right at once - close the
+old gap, open up to two new ones, leave confirmed and accepted gaps alone, and
+handle the event landing at either end of the log - and a miss leaves a stale
+gap row that no later insert will ever revisit. The full walk cannot leave one
+behind, because the gaps table is reconciled against the complete set of failing
+adjacencies every time.
+
+The cost is linear in account history per event. For a personal account that is
+thousands of rows against an operation measured in microseconds, and the
+Durable Object is single-threaded per account anyway, so this is throughput on
+one account rather than a system-wide ceiling. If it ever mattered, the same
+function narrowed to a window is a local change: nothing outside it knows how
+the gaps table is maintained.
+
+### 3.5 A duplicate bumps the version even though the balance does not move
+
+**Decision.** A redelivered event increments `deliveries` and the monotonic
+`version`, while leaving balance, event count and reconciliation status
+untouched.
+
+**Rejected.** Treating a duplicate as a no-op that skips the version bump.
+
+**Reason.** `version` is the projection guard: D1 only accepts a write whose
+version exceeds the stored one. The delivery counter is state the dashboard
+displays, and it is the visible half of the duplicate demo, so a duplicate that
+did not move the version would update the ledger and then be silently dropped by
+its own guard. "Nothing moves" is about the money, not about the record of what
+arrived.
+
+### 3.6 A redelivery that disagrees about the money keeps the first copy and says so
+
+**Decision.** When an event arrives with a known `event_id` but a different
+amount, direction, or balance, the stored row wins and the conflict is logged.
+
+**Rejected.** Overwriting with the newer values, and rejecting the message.
+
+**Reason.** Two things can produce this: a bank reusing a reference, or a
+hash-derived id colliding - and spec 5.4 already admits the hash id is the weaker
+key. Overwriting means a redelivery can rewrite settled history, which is worse
+than being wrong in one direction consistently. Rejecting turns it into a queue
+retry that fails identically forever. Keeping the first delivery and making the
+disagreement loud leaves a human able to find it.
+
+### 3.7 A confirmed gap that later looks fillable is flagged, not closed
+
+**Decision.** When a late email arrives that would have closed a gap already
+promoted to `CONFIRMED_GAP`, the gap keeps its status and gets `fillable_at` set.
+
+**Rejected.** Auto-closing it, which spec 6.4 explicitly leaves as a choice.
+
+**Reason.** Confirmation is the point at which the system has told an operator
+that a transaction is missing, and they may have acted on it. Silently reversing
+that - and silently reversing it again if another event reopens the same
+adjacency - makes the confirmed state meaningless. Recording that it now looks
+fillable gives the operator the same information without the tool changing
+history behind them. The flag clears itself if a further event makes the
+adjacency fail again, so it always reflects the current chain.
+
+### 3.8 Re-anchor clears the account, and the adjacency model makes that enough
+
+**Decision.** `acceptGap` moves a `CONFIRMED_GAP` to `ACCEPTED_GAP` with a
+reason. Accepted gaps are excluded from `open_gap_count` and from the
+reconciliation status, and the row is kept forever.
+
+**Rejected.** Deleting the gap, and adjusting later balances to absorb the delta.
+
+**Reason.** Spec 6.5 describes re-anchor as rescuing a chain that a lost email
+would otherwise poison forever. Worth noting precisely: because reconciliation
+is checked per adjacency against the previous *reported* balance rather than
+against a running computed total, a single break never propagates - only that
+one adjacency fails. So re-anchoring is not repairing arithmetic. What it does
+is let an account whose only fault is one permanently missing email read
+`RECONCILED` again, which is what makes the status trustworthy rather than
+permanently red.
+
+Keeping the row is the whole point: the delta is a recorded accepted
+discontinuity with a reason attached, not an erasure.
+
+Accepting is refused while a gap is still `PENDING_GAP`, because that would
+discard the one mechanism that distinguishes a late email from a lost one, and
+it is idempotent once accepted, because a retried operator action must not fail.
+
+### 3.9 The demo forces the window through the same transition the alarm uses
+
+**Decision.** `forceWindow()` promotes every open `PENDING_GAP` exactly as the
+alarm would, and the alarm handler promotes only gaps whose `promote_at` has
+passed.
+
+**Rejected.** Shortening `GAP_WINDOW_MS` for demos, and letting the demo write
+`CONFIRMED_GAP` rows directly.
+
+**Reason.** The simulator panel has to show the two-stage lifecycle inside a demo
+rather than across two days (spec 10), so some fast-forward is required. Making
+it a separate write path would mean the demo proves nothing about the real
+transition. Routing it through the same promotion keeps the demonstrated
+behaviour and the production behaviour the same code. Shortening the window
+instead would make the deployed system wrong in order to make a demo convenient.
