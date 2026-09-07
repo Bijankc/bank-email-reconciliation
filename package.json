@@ -10,8 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "cf-typegen": "wrangler types",
-    "db:local": "wrangler d1 execute bank-recon --local --file=./migrations/0001_init.sql",
-    "db:remote": "wrangler d1 execute bank-recon --remote --file=./migrations/0001_init.sql"
+    "db:local": "wrangler d1 execute bank-recon --local --file=./migrations/0001_init.sql && wrangler d1 execute bank-recon --local --file=./migrations/0002_gap_bounds.sql",
+    "db:remote": "wrangler d1 execute bank-recon --remote --file=./migrations/0001_init.sql && wrangler d1 execute bank-recon --remote --file=./migrations/0002_gap_bounds.sql"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

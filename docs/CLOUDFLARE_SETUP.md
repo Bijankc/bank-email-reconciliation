@@ -82,6 +82,7 @@ Then create the schema remotely:
 
 ```bash
 npx wrangler d1 execute bank-recon --remote --file=./migrations/0001_init.sql
+npx wrangler d1 execute bank-recon --remote --file=./migrations/0002_gap_bounds.sql
 ```
 
 Proves it worked:

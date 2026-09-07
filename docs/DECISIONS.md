@@ -587,3 +587,135 @@ it a separate write path would mean the demo proves nothing about the real
 transition. Routing it through the same promotion keeps the demonstrated
 behaviour and the production behaviour the same code. Shortening the window
 instead would make the deployed system wrong in order to make a demo convenient.
+
+## Phase 4 — projection to D1 and the read surface
+
+### 4.1 The balance chain is one implementation, shared by both stores
+
+**Decision.** Ordering and adjacency evaluation live in `src/chain.ts`. The
+Durable Object runs it over its own SQLite rows; the read API runs it over the
+projected D1 rows.
+
+**Rejected.** Leaving the logic in the DO and either duplicating it in the API,
+or projecting a precomputed `chain_position` and `chains` flag into D1.
+
+**Reason.** The projected view and the authoritative view are shown side by side
+on purpose, so a difference between them is a claim: this is replication lag.
+Two copies of the ordering rule would eventually make that claim false - the two
+views would differ because the code disagreed, not because the queue was behind,
+and the one feature built to teach eventual consistency would be teaching a bug.
+
+Projecting the marks instead of recomputing them was the alternative, and it is
+worse here for a specific reason: the tie ordering from DECISIONS 3.1 depends on
+the running balance, so a late event can change the position of events that were
+already written. Keeping positions correct would mean rewriting a span of
+transaction rows on every insert. Recomputing on read costs nothing at these
+sizes and cannot go stale.
+
+### 4.2 The version guard is a conditional upsert, run before anything else
+
+**Decision.** The accounts row is written with
+`ON CONFLICT DO UPDATE ... WHERE excluded.projection_version > accounts.projection_version`,
+alone, and its `meta.changes` decides whether the gap replacement runs at all.
+
+**Rejected.** Reading the stored version and then writing (check-then-act), and
+putting the whole projection in one `db.batch()`.
+
+**Reason.** Check-then-act is a race: two deliveries for one account can both
+read version 4 and both decide they are newer. Making the comparison part of the
+write means the database resolves it, and the loser matches zero rows.
+
+The batch was the tidier-looking option, and it does not work: D1 has no way to
+make later statements in a batch conditional on an earlier one, so the gap
+replacement would run even when the account write was rejected - which is
+exactly the stale write the guard exists to stop, arriving through the side
+door. Two round trips is the price of the guard actually guarding.
+
+Strictly greater, not greater-or-equal, so a redelivery of the message that
+wrote the current version is also discarded.
+
+### 4.3 Gaps are replaced per account; transactions are upserted per event
+
+**Decision.** Projecting an account deletes its gap rows and reinserts the set
+the ledger returned, in one batch. Transaction rows are written one at a time by
+the consumer and never deleted.
+
+**Rejected.** Merging gaps by id, and projecting the whole timeline each time.
+
+**Reason.** The two tables have opposite lifecycles. A gap can vanish - it fills,
+and the ledger simply stops returning it - and no event carries that news, so a
+merge would leave a filled gap on the dashboard forever. The ledger returns the
+complete set, which makes replace both correct and simple. Doing it in one batch
+means a dashboard poll never lands in the window where the old rows are gone and
+the new ones are not yet there.
+
+A transaction is a one-shot fact that never disappears, and its row carries
+three columns only the consumer knows: which R2 object holds the raw bytes, when
+the delivery arrived, and whether it was the first. The alarm re-projects an
+account without any of that, so if transactions were part of the account
+projection the alarm would blank them.
+
+### 4.4 The alarm projects itself
+
+**Decision.** After promoting gaps, `alarm()` calls `projectAccount` directly.
+
+**Rejected.** Leaving the projection to the next queue message for that account.
+
+**Reason.** Every other state change in this system arrives on a queue message,
+and the consumer projects it immediately afterwards. The alarm is the one
+transition with no message behind it. Without this call the dashboard would keep
+showing `PENDING_REVIEW` until the account happened to receive another
+transaction - which, for the exact case the two-stage lifecycle exists to handle
+(an account whose emails have stopped arriving), could be never. The state
+transition would be real and invisible.
+
+### 4.5 A superseded projection still writes its transaction row
+
+**Decision.** When the account write loses the version guard, the transaction
+row for that event is written anyway.
+
+**Rejected.** Skipping the whole projection when the guard rejects.
+
+**Reason.** The guard protects versioned summary state - balance, status, gap
+count - where an older value overwriting a newer one is corruption. A
+transaction row is not that: it is a fact about one event, it is written once,
+and no other delivery will ever write it. Skipping it would drop a transaction
+from the timeline permanently to protect a column it does not touch. The foreign
+key still holds, because a rejected guard means some newer write already created
+the account row.
+
+### 4.6 The read surface is unauthenticated, and that is a deployment risk worth naming
+
+**Decision.** `GET /api/accounts`, the account detail, and the audit listing take
+no auth, matching spec 8, where only the write endpoints are marked bearer-auth.
+The audit endpoint returns keys and metadata but never an object body.
+
+**Rejected.** Requiring the bearer token on reads.
+
+**Reason.** The dashboard is a static page that polls these endpoints, and giving
+it the token means shipping the token to every visitor, which is not
+authentication. So the choice is really between open reads and putting an
+identity layer in front of the whole thing.
+
+That makes this worth stating plainly rather than burying: **deployed as
+specified, with real bank emails flowing in, these endpoints publish real
+balances, merchants and masked account numbers to anyone with the URL.** The
+fixture-data demo is unaffected. The fix costs no code - Cloudflare Access in
+front of the Pages project and the Worker route, free tier, which is the same
+answer this stack would give for any internal dashboard. It is recorded in
+DEFERRED as D22 rather than silently accepted, and the audit endpoint withholds
+bodies so that at least the raw emails are not served to an unauthenticated
+caller.
+
+### 4.7 An empty ledger is a 404, not an empty account
+
+**Decision.** The authoritative read returns 404 when the Durable Object has no
+events.
+
+**Rejected.** Returning an empty account object.
+
+**Reason.** A Durable Object exists as soon as it is named, so
+`?authoritative=true` on a nonsense account id would otherwise answer 200 with a
+plausible-looking empty ledger, and the projected and authoritative paths would
+disagree about whether an account exists. Treating "no events" as "no account"
+makes the two paths agree.
