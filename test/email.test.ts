@@ -5,6 +5,14 @@ import nabilFixture from "../samples/redacted/nabil-debit.eml?raw";
 import { handleEmail, readRawEmail, receiveEmail } from "../src/ingress/email";
 import { makeEmailMessage } from "./helpers";
 
+/** A message that slipped through the forwarding rule and is not a bank alert. */
+const NEWSLETTER = [
+  "From: newsletter@example.invalid",
+  "Subject: Sale",
+  "",
+  "Half price today.",
+].join("\r\n");
+
 // The email() path cannot be exercised through Email Routing without a domain
 // and a Cloudflare account, so it is driven here by a synthetic
 // ForwardableEmailMessage over a redacted fixture. Every value in those
@@ -76,13 +84,48 @@ describe("receiveEmail", () => {
 });
 
 describe("handleEmail", () => {
-  it("consumes a forwarded alert without throwing", async () => {
+  it("parses a forwarded NIMB alert into a normalized event", async () => {
     const message = makeEmailMessage({
       from: "donot_reply@nimb.com.np",
       to: "alerts@example.invalid",
       raw: nimbFixture,
     });
 
-    await expect(handleEmail(message, env)).resolves.toBeUndefined();
+    const outcome = await handleEmail(message, env);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.event.event_id).toBe("NIMB:88213047qLmT");
+    expect(outcome.event.reported_balance_paisa).toBe(731055);
+  });
+
+  it("parses a forwarded Nabil alert into the same shape", async () => {
+    const message = makeEmailMessage({
+      from: "txn-alert@nabilbank.com",
+      to: "alerts@example.invalid",
+      raw: nabilFixture,
+    });
+
+    const outcome = await handleEmail(message, env);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.event.account_id).toBe("NABIL:220XXXXXX881904");
+    expect(outcome.event.source_channel).toBe("email");
+  });
+
+  it("reports an unparseable message instead of throwing", async () => {
+    // Email Routing has already accepted the message by the time email() runs,
+    // so throwing here would only lose it. A newsletter that slipped through the
+    // forwarding rule has to be a recorded outcome.
+    const message = makeEmailMessage({
+      from: "newsletter@example.invalid",
+      to: "alerts@example.invalid",
+      raw: NEWSLETTER,
+    });
+
+    const outcome = await handleEmail(message, env);
+
+    expect(outcome.ok).toBe(false);
   });
 });

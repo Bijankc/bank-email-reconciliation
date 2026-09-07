@@ -66,11 +66,12 @@ async function collectTable(html: string): Promise<Row[]> {
     .on("tr", collector.row)
     .on("td", collector.cellElement)
     .on("th", collector.cellElement)
+    // A text handler on `td` already fires for text inside nested elements, so
+    // the wrapper spans bank mail templates add cost nothing here. Adding a
+    // `td *` handler as well double-counts them: "Credit" arrives as
+    // "CreditCredit".
     .on("td", collector.cellText)
     .on("th", collector.cellText)
-    // Cell text is often wrapped in a span or a font tag by the mail template.
-    .on("td *", collector.cellText)
-    .on("th *", collector.cellText)
     .transform(new Response(html));
 
   // HTMLRewriter is lazy: the handlers do not run until the body is consumed.
