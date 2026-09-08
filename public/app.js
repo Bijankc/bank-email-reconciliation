@@ -37,10 +37,41 @@ function signedRupees(paisa) {
   return `${paisa > 0 ? "+" : ""}${rupees(paisa)}`;
 }
 
+/**
+ * Every timestamp the API returns is a true UTC instant. They are rendered in
+ * Asia/Kathmandu so the digits on screen match the digits in the alert email a
+ * user is looking at, which is the comparison they will actually make.
+ *
+ * The zone is fixed rather than the viewer's local one on purpose: this is a
+ * dashboard for Nepali bank accounts, and a reader in another timezone still
+ * wants the time the bank printed, not the time it was where they are.
+ *
+ * Storage stays UTC. This is the only place a timezone is applied.
+ */
+const DISPLAY_ZONE = "Asia/Kathmandu";
+
+const timeFormat = new Intl.DateTimeFormat("en-GB", {
+  timeZone: DISPLAY_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
 function shortTime(iso) {
   if (!iso) return "—";
-  // The bank's own wall clock, shown as the bank printed it. See DECISIONS 1.1.
-  return iso.replace("T", " ").replace("Z", "");
+  const parsed = Date.parse(iso);
+  // A value the browser cannot parse is shown as it arrived rather than as
+  // "Invalid Date", which would hide what actually came back from the API.
+  if (Number.isNaN(parsed)) return iso;
+
+  const parts = Object.fromEntries(
+    timeFormat.formatToParts(new Date(parsed)).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 function pill(status) {

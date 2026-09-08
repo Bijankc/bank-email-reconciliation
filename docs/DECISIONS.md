@@ -150,31 +150,58 @@ between those two dates.
 
 ## Phase 1 — parsers and normalization
 
-### 1.1 Bank wall-clock time is preserved verbatim and stamped `Z`, not shifted to true UTC
+### 1.1 Bank timestamps are converted from Nepal local time to true UTC
 
-**Decision.** `12Mar26 09:14:22` becomes `2026-03-12T09:14:22Z`. The digits the
-bank printed are kept exactly; the `Z` is a formatting convention, not a claim
-that the reading was taken in UTC.
+**Decision.** Both banks are taken to stamp Nepal Standard Time (UTC+05:45), and
+`toIso` subtracts that offset. `12Mar26 09:14:22` becomes
+`2026-03-12T03:29:22Z`. The dashboard renders it back in `Asia/Kathmandu`, so
+the digits on screen match the digits in the alert email.
 
-**Rejected.** Converting from Nepal time (UTC+05:45) to real UTC, which would
-make the same stamp `2026-03-12T03:29:22Z`.
+**Rejected.** Preserving the wall-clock reading verbatim and appending `Z` as a
+formatting convention, which is what this project did until the conversion
+landed.
 
-**Reason.** Neither bank states a zone, so any conversion is an assumption about
-data the email does not carry. The assumption happens to be safe for *ordering* —
-both banks stamp the same local zone, so applying the same offset to both cannot
-change their relative order, and ordering is the only thing the balance chain
-depends on. That leaves the choice to be made on display: the owner reads these
-alerts in a Nepali inbox, and a dashboard that echoes the time printed in the
-email is easier to trust than one that silently subtracts 5h45m. The spec's own
-example in §5.1 does the same thing — `2026-08-28 14:20` in the raw Nabil table
-becomes `2026-08-28T14:20:00Z`, with no offset applied.
+**Reason: one time base across the schema.** `applied_at`, `detected_at`,
+`promote_at`, `accepted_at` and `received_at` are all true UTC, because they come
+from `Date.toISOString()` at the moment something happened. An `occurred_at`
+that sits in the same table, in the same format, with the same `Z` suffix, while
+carrying local time is a trap rather than a convention: any comparison across
+those columns is silently wrong by 5 hours 45 minutes.
 
-The cost is that `occurred_at` is not a true instant, so it must not be compared
-against `Date.now()` or against the email's `Date:` header without adding the
-offset back. Nothing in the engine does that: the chain compares events only
-against each other. `DEFERRED.md` D14 records the check that confirms both banks
-stamp NPT. Should this need to change, it is one function — `toIso` in
-`src/parse/time.ts` — and the fixtures move with it.
+Nothing compares them today. Several plausible next steps would. A freshness
+check ("no email from this account in 24 hours"), a measure of how late a
+forward arrived (`received_at - occurred_at`), an alarm scheduled relative to a
+transaction rather than to detection - each of those reads correctly, compiles,
+passes review, and is wrong by a fixed offset with nothing to indicate it. The
+conversion removes the whole category before anything depends on it.
+
+**Why this was safe to defer, which is a weaker claim.** `account_id` is
+namespaced by bank, so one Durable Object only ever holds one bank's timestamps.
+Had the assumption been wrong, every event in a given ledger would have been off
+by the same constant, and sort order - the only property the balance chain
+depends on - would have been unchanged. That is why the previous behaviour was
+not broken, and it is not a reason to prefer it.
+
+**What it costs.** The assumption is now load-bearing in a way it was not before.
+Under the old behaviour a wrong zone meant a mislabelled timestamp whose digits
+were still exactly what the bank printed. Under the conversion, a wrong zone
+means `occurred_at` is a genuinely wrong instant, off by up to 5 hours 45
+minutes, and every derived comparison inherits the error. `DEFERRED.md` D14
+records the check that settles it against a real email, and it stays open.
+
+The offset is a fixed constant rather than a timezone database lookup because
+Nepal has no daylight saving and has not changed offset since 1986.
+
+**This was only free to change because nothing was deployed.** The conversion
+rewrites what `occurred_at` means, and it does not touch rows already stored. A
+ledger holding events from both sides of the change would carry two time bases
+in one column, and since the chain sorts on `occurred_at`, a pre-conversion
+event and a post-conversion event could sort into the wrong order relative to
+each other - which is the one failure the whole design is built to avoid. Local
+emulation state showed exactly this after the change, harmlessly. Had there been
+real data, this would have needed a migration that rewrote every stored
+`occurred_at`, not a parser edit. Any future change to the time base has to
+carry one.
 
 ### 1.2 Nabil is read with HTMLRewriter, and its columns are found by header text
 
@@ -975,3 +1002,27 @@ brief makes.
 A README that overstates its own mechanism is exactly the kind of thing that
 falls apart under one good question, and the weaker claim is both true and
 sufficient.
+
+## Post-build decisions
+
+### 7.1 Timestamps are stored in UTC and displayed in Nepal time
+
+**Decision.** The API returns UTC instants. `public/app.js` formats every
+timestamp through a single `Intl.DateTimeFormat` pinned to `Asia/Kathmandu`.
+
+**Rejected.** Displaying raw UTC, and formatting in the viewer's local timezone.
+
+**Reason.** Converting `occurred_at` to a true instant (1.1) fixed the storage
+and broke the display: a user reading an alert email that says 09:14 would see
+03:29 on the dashboard and have to do the arithmetic themselves, on every row,
+to check the tool against the email. That is the exact comparison the dashboard
+exists to support.
+
+The viewer's own timezone was the other option and is worse. This is a dashboard
+for accounts at Nepali banks; someone reading it from another country still
+wants the time the bank printed, not the local time of wherever they opened the
+laptop. A fixed display zone also means a screenshot means the same thing to
+everyone who looks at it.
+
+One formatter, in one place, applied at render. No timezone logic exists
+anywhere else in the system.

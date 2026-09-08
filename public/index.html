@@ -80,6 +80,8 @@
           Ordered by the time the bank stamped, not the order the email arrived.
           Each row is checked against the one above it: the balance after this
           transaction should equal the balance before it plus the movement.
+          Times are stored in UTC and shown in Nepal time, so they match the
+          digits in the alert email.
         </p>
         <table class="grid" id="timeline-table">
           <thead>
