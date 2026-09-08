@@ -57,13 +57,36 @@ describe("parsePaisa", () => {
 
 describe("timestamps", () => {
   it("normalizes the jammed DDMonYY form NIMB uses", () => {
-    expect(parseNimbTimestamp("12Mar26 09:14:22")).toBe("2026-03-12T09:14:22Z");
-    expect(parseNimbTimestamp("28Aug26 14:38:20")).toBe("2026-08-28T14:38:20Z");
+    expect(parseNimbTimestamp("12Mar26 09:14:22")).toBe("2026-03-12T03:29:22Z");
+    expect(parseNimbTimestamp("28Aug26 14:38:20")).toBe("2026-08-28T08:53:20Z");
   });
 
   it("normalizes the seconds-less form Nabil uses to :00", () => {
-    expect(parseNabilTimestamp("2026-03-12 10:05")).toBe("2026-03-12T10:05:00Z");
-    expect(parseNabilTimestamp("2026-08-28 14:20")).toBe("2026-08-28T14:20:00Z");
+    expect(parseNabilTimestamp("2026-03-12 10:05")).toBe("2026-03-12T04:20:00Z");
+    expect(parseNabilTimestamp("2026-08-28 14:20")).toBe("2026-08-28T08:35:00Z");
+  });
+
+  it("converts Nepal local time to a true UTC instant", async () => {
+    // The offset is the point of the conversion, so it gets its own assertion
+    // rather than riding along inside a larger toEqual. 05:45, no DST.
+    const npt = Date.parse("2026-03-12T09:14:22Z");
+    const utc = Date.parse(parseNimbTimestamp("12Mar26 09:14:22"));
+
+    expect(npt - utc).toBe((5 * 60 + 45) * 60 * 1000);
+  });
+
+  it("puts both banks on the same time base", async () => {
+    // The same wall-clock reading from either bank has to become the same
+    // instant, or two accounts could never be compared against each other.
+    expect(parseNimbTimestamp("12Mar26 10:05:00")).toBe(
+      parseNabilTimestamp("2026-03-12 10:05"),
+    );
+  });
+
+  it("carries the conversion back across midnight", async () => {
+    // 02:00 NPT is the previous day in UTC. A naive implementation that only
+    // subtracted from the clock fields would give 2026-03-12T20:15:00Z.
+    expect(parseNimbTimestamp("12Mar26 02:00:00")).toBe("2026-03-11T20:15:00Z");
   });
 
   it("refuses a date that does not exist instead of rolling it over", () => {
@@ -142,8 +165,9 @@ describe("NIMB text parser", () => {
       direction: "DEBIT",
       amount_paisa: 145000,
       reported_balance_paisa: 731055,
-      // The debit time (09:14:22), not the balance-read time (09:15:01).
-      occurred_at: "2026-03-12T09:14:22Z",
+      // The debit time (09:14:22 NPT), not the balance-read time (09:15:01),
+      // converted to UTC: 09:14:22 - 05:45 = 03:29:22.
+      occurred_at: "2026-03-12T03:29:22Z",
       merchant: "coffee",
       reference: "88213047qLmT",
     });
@@ -192,7 +216,7 @@ describe("Nabil HTML parser", () => {
       direction: "DEBIT",
       amount_paisa: 125000,
       reported_balance_paisa: 606055,
-      occurred_at: "2026-03-12T10:05:00Z",
+      occurred_at: "2026-03-12T04:20:00Z",
       merchant: "ORCHID STATIONERS PVT. LTD. KTM",
       reference: "71104582WxYz",
     });
@@ -277,7 +301,7 @@ describe("parseBankEmail", () => {
       direction: "DEBIT",
       amount_paisa: 145000,
       reported_balance_paisa: 731055,
-      occurred_at: "2026-03-12T09:14:22Z",
+      occurred_at: "2026-03-12T03:29:22Z",
       merchant: "coffee",
       reference: "88213047qLmT",
       source_channel: "email",
@@ -299,7 +323,7 @@ describe("parseBankEmail", () => {
       direction: "DEBIT",
       amount_paisa: 125000,
       reported_balance_paisa: 606055,
-      occurred_at: "2026-03-12T10:05:00Z",
+      occurred_at: "2026-03-12T04:20:00Z",
       merchant: "ORCHID STATIONERS PVT. LTD. KTM",
       reference: "71104582WxYz",
       source_channel: "email",
