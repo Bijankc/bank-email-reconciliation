@@ -375,3 +375,77 @@ button:disabled {
   border-radius: 6px;
   margin-top: 12px;
 }
+
+/* ---- simulator ---- */
+
+#simulator-view {
+  margin-top: 34px;
+  padding-top: 26px;
+  border-top: 1px solid var(--line);
+}
+
+.sim-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 8px;
+  flex-wrap: wrap;
+}
+
+.sim-head code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--line);
+  font-weight: 500;
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+button.ghost:hover {
+  color: var(--ink);
+}
+
+.sim-token {
+  font: inherit;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--ink);
+  max-width: 280px;
+  width: 100%;
+}
+
+.sim-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.sim-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sim-card button {
+  width: 100%;
+}
+
+.sim-card .note {
+  margin: 0;
+}

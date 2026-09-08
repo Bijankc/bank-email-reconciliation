@@ -7,7 +7,7 @@ import {
   listAudit,
 } from "./api";
 import { checkBearer } from "./auth";
-import { handleQueueBatch } from "./consumer";
+import { handleDeadLetterBatch, handleQueueBatch } from "./consumer";
 import { handleEmail } from "./ingress/email";
 import { enqueueEvent } from "./ingress/enqueue";
 import { SCHEMA_VERSION, type QueuedTxnMessage } from "./types";
@@ -218,6 +218,12 @@ export default {
   },
 
   async queue(batch: MessageBatch<QueuedTxnMessage>, env: Env): Promise<void> {
+    // One handler, two queues. The dead-letter batch takes a different path
+    // because retrying there is guaranteed to fail again.
+    if (batch.queue.endsWith("-dlq")) {
+      await handleDeadLetterBatch(batch, env);
+      return;
+    }
     await handleQueueBatch(batch, env);
   },
 } satisfies ExportedHandler<Env, QueuedTxnMessage>;

@@ -1,7 +1,8 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { auditKey, keySegment, writeAudit } from "../src/audit";
-import { handleQueueBatch } from "../src/consumer";
+import { handleDeadLetterBatch, handleQueueBatch } from "../src/consumer";
+import { POISON_REFERENCE } from "../src/types";
 import { makeQueueBatch, makeQueuedMessage } from "./helpers";
 
 /**
@@ -165,5 +166,95 @@ describe("handleQueueBatch", () => {
 
     expect(second.calls[0].acked()).toBe(1);
     expect(afterSecond?.uploaded.getTime()).toBe(afterFirst?.uploaded.getTime());
+  });
+});
+
+describe("the poison hook and the dead-letter queue", () => {
+  it("fails a poison event every time instead of applying it", async () => {
+    // The demo needs a message that reliably exhausts its retries. It throws
+    // after the audit write and before the ledger, so nothing reaches an
+    // account and the raw payload is still archived.
+    const { batch, calls } = makeQueueBatch([
+      makeQueuedMessage({}, { event_id: "NIMB:poison-1", reference: POISON_REFERENCE }),
+    ]);
+
+    await handleQueueBatch(batch, env);
+
+    expect(calls[0].retried()).toBe(1);
+    expect(calls[0].acked()).toBe(0);
+  });
+
+  it("still archives the poison payload before failing", async () => {
+    const { batch } = makeQueueBatch([
+      makeQueuedMessage({}, { event_id: "NIMB:poison-2", reference: POISON_REFERENCE }),
+    ]);
+
+    await handleQueueBatch(batch, env);
+
+    // Audit-first is what makes a poisoned event investigable rather than lost.
+    expect(
+      await env.AUDIT.head("raw/NIMB:099XX4417/NIMB:poison-2.eml"),
+    ).not.toBeNull();
+  });
+
+  it("never lets a poison event reach the ledger", async () => {
+    const { batch } = makeQueueBatch([
+      makeQueuedMessage(
+        {},
+        {
+          event_id: "NIMB:poison-3",
+          account_id: "NIMB:poison-account",
+          reference: POISON_REFERENCE,
+        },
+      ),
+    ]);
+
+    await handleQueueBatch(batch, env);
+
+    const stub = env.ACCOUNT_LEDGER.get(
+      env.ACCOUNT_LEDGER.idFromName("NIMB:poison-account"),
+    );
+    expect((await stub.status()).event_count).toBe(0);
+  });
+
+  it("does not block the messages behind it in the batch", async () => {
+    // The whole point of a dead-letter queue: one bad message must not stop
+    // the pipeline.
+    const { batch, calls } = makeQueueBatch([
+      makeQueuedMessage({}, { event_id: "NIMB:poison-4", reference: POISON_REFERENCE }),
+      makeQueuedMessage({}, { event_id: "NIMB:healthy-after-poison" }),
+    ]);
+
+    await handleQueueBatch(batch, env);
+
+    expect(calls[0].retried()).toBe(1);
+    expect(calls[1].acked()).toBe(1);
+  });
+
+  it("acks whatever reaches the dead-letter queue rather than retrying it", async () => {
+    // A message here has already failed every attempt on the main queue.
+    // Retrying it would repeat that failure forever.
+    const { batch, calls } = makeQueueBatch(
+      [makeQueuedMessage({}, { event_id: "NIMB:poison-5", reference: POISON_REFERENCE })],
+      { attempts: 6 },
+    );
+
+    await handleDeadLetterBatch(batch, env);
+
+    expect(calls[0].acked()).toBe(1);
+    expect(calls[0].retried()).toBe(0);
+  });
+
+  it("leaves the ledger untouched from the dead-letter path too", async () => {
+    const { batch } = makeQueueBatch([
+      makeQueuedMessage({}, { event_id: "NIMB:poison-6", account_id: "NIMB:dlq-account" }),
+    ]);
+
+    await handleDeadLetterBatch(batch, env);
+
+    const stub = env.ACCOUNT_LEDGER.get(
+      env.ACCOUNT_LEDGER.idFromName("NIMB:dlq-account"),
+    );
+    expect((await stub.status()).event_count).toBe(0);
   });
 });

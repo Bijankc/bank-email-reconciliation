@@ -10,6 +10,7 @@ const POLL_MS = 4000;
 const el = (id) => document.getElementById(id);
 const accountsView = el("accounts-view");
 const detailView = el("detail-view");
+const simulatorView = el("simulator-view");
 
 let pollTimer = null;
 let currentAccount = null;
@@ -49,6 +50,8 @@ function pill(status) {
   return span;
 }
 
+// Shared with simulator.js, which is loaded first and therefore cannot define
+// it itself. Two files, one helper, no bundler.
 function text(tag, value, className) {
   const node = document.createElement(tag);
   node.textContent = value;
@@ -359,6 +362,7 @@ async function renderAudit(accountId) {
 async function showAccount(accountId) {
   currentAccount = accountId;
   accountsView.hidden = true;
+  simulatorView.hidden = true;
   detailView.hidden = false;
 
   const authoritative = el("authoritative-toggle").checked;
@@ -402,6 +406,7 @@ function showList() {
   currentAccount = null;
   detailView.hidden = true;
   accountsView.hidden = false;
+  simulatorView.hidden = false;
   renderAccounts();
 }
 
@@ -429,6 +434,13 @@ el("back-link").addEventListener("click", (fired) => {
 
 el("authoritative-toggle").addEventListener("change", () => {
   if (currentAccount !== null) showAccount(currentAccount);
+});
+
+// The simulator posts events and then leans on the same poll everything else
+// uses, so what a scenario demonstrates includes the delay before the read
+// model catches up.
+buildSimulator(el("simulator"), () => {
+  window.setTimeout(tick, 250);
 });
 
 showList();

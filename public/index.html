@@ -42,6 +42,17 @@
         </table>
       </section>
 
+      <section id="simulator-view">
+        <h2>Simulator</h2>
+        <p class="hint">
+          Every button posts a normalized event to <code>/webhook</code>, the
+          same authenticated ingress a bank forward converges on. Nothing here
+          calls an internal function or writes to a store directly: the demo
+          drives the real pipeline and waits for the dashboard to catch up.
+        </p>
+        <div id="simulator"></div>
+      </section>
+
       <section id="detail-view" hidden>
         <p><a href="#" id="back-link" class="back">&larr; All accounts</a></p>
 
@@ -93,6 +104,7 @@
       </section>
     </main>
 
+    <script src="/simulator.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
