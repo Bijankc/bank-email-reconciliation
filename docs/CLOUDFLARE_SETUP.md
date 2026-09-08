@@ -10,6 +10,37 @@ what proves it worked.
 
 ---
 
+## Read this before the first deploy
+
+**Any change to how `occurred_at`, `event_id`, `account_id` or the paisa amounts
+are derived must land before the first deploy, or carry a migration that
+rewrites every stored row.**
+
+These are derived values, not values the bank supplies, and nothing in the
+stored data records which version of a rule produced it. Change a rule
+afterwards and the store holds two incompatible generations of the same column
+with no way to tell them apart:
+
+- `occurred_at` is what the balance chain sorts on. Rows on two time bases can
+  order wrongly against each other.
+- `event_id` is the dedup key. If it changes, a re-forwarded email no longer
+  matches its stored row, inserts a second one, and the movement is counted
+  twice — silently, with no error and no failing test.
+- `account_id` is the Durable Object's name. If it changes, the ledger splits in
+  two and each half reconciles against a fraction of the history.
+
+This is not hypothetical. Converting `occurred_at` from bank local time to UTC
+did exactly this during the build, and because `occurred_at` feeds the
+hash-derived `event_id`, it changed the identity of every event that had no bank
+reference as well. It was free only because nothing had been deployed yet.
+
+A migration here means rewriting the column in **both** the Durable Object
+SQLite tables and the D1 projection, and re-deriving anything downstream of it.
+`docs/DECISIONS.md` 7.3 has the full table of derived values and what each one
+costs.
+
+---
+
 ## Step 0 — What works with no account at all
 
 Nothing below is needed to run, test, or demo the project locally.
@@ -19,6 +50,18 @@ npm install
 npm run db:local         # applies migrations/0001_init.sql to the local D1
 npx wrangler dev         # local emulation; no account, no login
 ```
+
+**Before any demo or screenshot run, start from clean state:**
+
+```bash
+rm -rf .wrangler
+npm run db:local
+npm run dev
+```
+
+Local emulation state persists between runs and can hold rows written by an
+earlier version of the parsers - including `occurred_at` values on the old time
+base, in the column the chain sorts on. `docs/DEMO.md` is the full walkthrough.
 
 `wrangler dev` emulates D1, R2, Queues, and Durable Objects on disk under
 `.wrangler/`. The simulator path (`POST /webhook`) exercises the same queue,
@@ -161,6 +204,24 @@ Generate one with:
 node -e "console.log(crypto.randomUUID() + crypto.randomUUID())"
 ```
 
+**There are two secrets, and they must be different values.** They guard
+different things and a leak of one should not imply the other:
+
+```bash
+npx wrangler secret put SIMULATOR_TOKEN   # POST /webhook, force-window
+npx wrangler secret put OPERATOR_TOKEN    # accepting a gap, permanently
+```
+
+`SIMULATOR_TOKEN` admits an event to the pipeline. `OPERATOR_TOKEN` records a
+human accepting a real discrepancy on the record. Generate each one with the
+command above rather than choosing them; both fail closed if unset, so a
+deployment missing one rejects every request to its routes rather than waving
+them through.
+
+The simulator is additionally fenced: `SIMULATOR_SCOPE` in `wrangler.jsonc` is
+`demo-accounts-only`, so even a correct `SIMULATOR_TOKEN` can only write to
+`DEMO-` account ids. Leave it that way on a deployment that sees real email.
+
 Then:
 
 ```bash
@@ -171,8 +232,9 @@ Proves it worked (replace the host with the deployed workers.dev host):
 
 ```bash
 curl -s https://bank-email-reconciliation.<subdomain>.workers.dev/health
-# expect ok:true with d1, r2, durable_object and queue_producer all "ok",
-# and simulator_token "configured"
+# expect ok:true with d1, r2, durable_object and queue_producer all "ok";
+# simulator_token AND operator_token both "configured"; and
+# simulator_scope "demo-accounts-only"
 ```
 
 Then prove the async path end to end, which is what Phase 2 built (this is
@@ -200,8 +262,10 @@ npx wrangler r2 object get bank-recon-audit   "raw/NABIL:220XXXXXX881904/NABIL:5
 Re-POST the identical body once more: the second pass must log `audit.exists`
 rather than `audit.written`. That is write-once holding on real R2.
 
-A `503` with `simulator_token: "unset"` means the secret did not land —
-`/webhook` fails closed by design rather than accepting unauthenticated writes.
+A `503` with either token `"unset"` means that secret did not land — the routes
+it guards fail closed by design rather than accepting unauthenticated writes.
+`simulator_scope` reading anything other than `demo-accounts-only` means the
+fence is off and the simulator can write to real account ids.
 
 ---
 
@@ -257,8 +321,14 @@ is called by JavaScript in the page, not by a browser navigation — a login
 policy on it returns an Access HTML redirect where the simulator expects JSON,
 and every scenario breaks. It carries its own protection: a constant-time bearer
 check against `SIMULATOR_TOKEN` that fails closed if the secret is unset
-(`src/auth.ts`). Treat that token as the credential that guards this path, and
-generate it with the command in Step 6 rather than choosing one.
+(`src/auth.ts`), and the deployed `SIMULATOR_SCOPE` restricts it to `DEMO-`
+account ids, so even a leaked token cannot put a fabricated movement into a real
+account's balance chain. Treat that token as the credential guarding this path,
+and generate it with the command in Step 6 rather than choosing one.
+
+Note what the bypass does **not** cover: `POST /api/accounts/:id/gaps/:gapId/accept`
+sits behind Access like everything else, and takes `OPERATOR_TOKEN` rather than
+the simulator's secret.
 
 **Application B — everything else.** *Add an application* → **Self-hosted**.
 
@@ -292,9 +362,9 @@ source rather than trusting this list:
 | `GET /api/accounts` | Yes |
 | `GET /api/accounts/:id` (and `?authoritative=true`) | Yes |
 | `GET /api/accounts/:id/audit` | Yes |
-| `POST /api/accounts/:id/force-window` | Yes |
-| `POST /api/accounts/:id/gaps/:gapId/accept` | Yes |
-| `POST /webhook` | **No — bypassed by Application A** |
+| `POST /api/accounts/:id/force-window` | Yes (and `SIMULATOR_TOKEN` + the `DEMO-` fence) |
+| `POST /api/accounts/:id/gaps/:gapId/accept` | Yes (and `OPERATOR_TOKEN` underneath) |
+| `POST /webhook` | **No — bypassed by Application A** (bearer + `DEMO-` fence) |
 
 The two `POST /api/...` routes are called from the dashboard by a logged-in
 browser, so the Access session cookie rides along and they keep working. They

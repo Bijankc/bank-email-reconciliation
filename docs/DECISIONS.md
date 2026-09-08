@@ -1026,3 +1026,75 @@ everyone who looks at it.
 
 One formatter, in one place, applied at render. No timezone logic exists
 anywhere else in the system.
+
+### 7.2 The simulator is fenced to DEMO- accounts, and the two write secrets are split
+
+**Decision.** `SIMULATOR_TOKEN` guards `POST /webhook` and force-window;
+`OPERATOR_TOKEN` guards the gap accept route. Separately, a `SIMULATOR_SCOPE`
+var restricts both simulator routes to account ids whose label starts with
+`DEMO-`. The deployed value is the restrictive one, and an unset value restricts.
+
+**Rejected.** One secret for all three routes, and deciding the fence by
+sniffing the request hostname.
+
+**Reason.** `/webhook` is deliberately excluded from the Cloudflare Access policy
+(5.1 of the runbook explains why: a login policy returns HTML where the
+simulator expects JSON), so its bearer token is the only thing in front of it.
+Sharing that token with the accept route made a single leak into two unrelated
+powers: injecting fabricated transactions, and accepting away a real
+discrepancy. Those have nothing to do with each other and should not share a
+credential.
+
+The fence is the more important half. Even with a correct token, the simulator
+can now only write to accounts it created. The failure it prevents is specific:
+a fabricated movement inserted into a real account's log does not announce
+itself - it changes the balance chain, and every later adjacency reconciles
+against the wrong number.
+
+Hostname sniffing was the alternative and is worse: it puts the security
+boundary in a string comparison against a value the request supplies, and it
+breaks the moment a custom domain is added.
+
+**What this buys, precisely.** A leaked `SIMULATOR_TOKEN` cannot corrupt a real
+account's chain.
+
+**What it does not buy.** The demo accounts remain writable by anyone holding
+that token - the fence limits blast radius, it is not authentication. A leaked
+`OPERATOR_TOKEN` can still accept a real gap on a real account, because that is
+exactly what the route is for. And neither token protects anything if Access is
+not configured, since every other route is unauthenticated by design.
+
+### 7.3 Any change to a derived identifier is a data migration, not a parser edit
+
+**The rule.** Several values stored across the Durable Objects, D1 and R2 are
+*derived* from parse rules rather than supplied by the bank. Nothing in the
+stored data records which version of a rule produced it. So: **a change to how
+any of them is derived must land before the first deploy, or carry a migration
+that rewrites every existing row.** A parser edit is not sufficient and the
+absence of a test failure is not evidence of safety.
+
+This was learned rather than anticipated. Converting `occurred_at` to UTC (1.1)
+changed the meaning of a stored column without touching stored rows, and local
+emulation state immediately showed one ledger holding both bases in the column
+the chain sorts on. It had a second-order effect that was less obvious and worse:
+`occurred_at` is part of the material for a hash-derived `event_id`, so the same
+conversion silently changed the identity of every event that had no bank
+reference. The reference-less NIMB fixture went from
+`NIMB:843303aea9dcb788...` to `NIMB:93c91a466c6e31b8...`. Deployed, a
+re-forwarded copy of one of those transactions would no longer have matched the
+stored row - it would have inserted a second one and double-counted the movement.
+
+**The derived values, and what a change to each costs:**
+
+| Value | Derived from | If the rule changes |
+|---|---|---|
+| `event_id` | the bank reference, or a hash over bank, `account_id`, `occurred_at`, direction and amount | **Corrupts.** Dedup stops matching, a redelivery inserts a duplicate, the movement is counted twice and the chain breaks. |
+| `account_id` | `{bank}:{parsed account label}` | **Corrupts.** It is the Durable Object name, so the ledger silently splits in two and each half reconciles against a fraction of the history. |
+| `occurred_at` | the two bank timestamp formats | **Corrupts.** The chain sorts on it; rows on two time bases can order wrongly against each other. |
+| `amount_paisa`, `reported_balance_paisa` | the paisa parse | **Corrupts.** New events chain against old ones, so a changed rule manufactures gaps that never happened. |
+| `gap_id` | a hash of the bounding `event_id`s | Self-heals. Gaps are re-detected and the projection replaces an account's set wholesale. |
+| R2 audit keys | `raw/{account_id}/{event_id}` | Orphans rather than corrupts. Existing objects stop appearing under the account prefix, and a redelivery writes a second copy. |
+
+The three in the first group are the ones to be careful about, and `event_id`
+most of all, because its failure is silent: no error, no failing test, just a
+transaction counted twice.
