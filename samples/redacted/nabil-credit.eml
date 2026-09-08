@@ -1,0 +1,32 @@
+From: "Nabil Bank" <txn-alert@nabilbank.com>
+To: alerts@example.invalid
+Subject: Nabil Bank Transaction Alert
+Message-ID: <redacted-nabil-0002@example.invalid>
+Date: Thu, 12 Mar 2026 15:31:20 +0545
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html>
+  <body>
+    <p>Dear Customer,</p>
+    <p>A transaction has occurred on your account 220XXXXXX881904.</p>
+    <table border="1" cellpadding="4" style="border-collapse:collapse">
+      <tbody>
+      <tr>
+        <th><span style="font-weight:bold">Transaction Date</span></th>
+        <th><span style="font-weight:bold">Transaction Type</span></th>
+        <th><span style="font-weight:bold">Transaction Amount</span></th>
+        <th><span style="font-weight:bold">Available Balance</span></th>
+        <th><span style="font-weight:bold">Remarks</span></th>
+      </tr>
+      <tr>
+        <td><span>2026-03-12 15:30</span></td>
+        <td><span>Credit</span></td>
+        <td><span>4,000.00</span></td>
+        <td><span>10,060.55</span></td>
+        <td><span>FT ONLINE,88350021ZmPq,DEEPAK &amp; SONS TRADERS, LALITPUR</span></td>
+      </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

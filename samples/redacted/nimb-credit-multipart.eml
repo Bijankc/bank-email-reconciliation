@@ -1,0 +1,29 @@
+From: "NIMB Alerts" <donot_reply@nimb.com.np>
+To: alerts@example.invalid
+Subject: Transaction Alert
+Message-ID: <redacted-nimb-0002@example.invalid>
+Date: Thu, 12 Mar 2026 11:03:00 +0545
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="----=_Part_9182_invented"
+
+------=_Part_9182_invented
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Dear Customer,
+
+Your a/c 099XX4417 has been Credited by NPR 2,500.00 on 12Mar26 11:02:10.
+The transaction detail is 90417755rTgH,salary,401228865,1111020009443317,55210.
+Available Balance on 12Mar26 11:02:44 is NPR 9,810.55
+
+Thank you for banking with us.
+
+------=_Part_9182_invented
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>Dear Customer,</p>
+<p>Your a/c 099XX4417 has been Credited by NPR 2,500.00 on 12Mar26 11:02:10.</p>
+</body></html>
+
+------=_Part_9182_invented--
