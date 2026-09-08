@@ -132,6 +132,11 @@ it is deployed.
 ```bash
 npx wrangler queues create txn-events-dlq
 npx wrangler queues create txn-events
+
+# The Worker consumes both queues: txn-events for real work, txn-events-dlq so
+# a poisoned event is recorded rather than accumulating unread. Both consumer
+# blocks are already in wrangler.jsonc; no extra `queues consumer add` is needed
+# because they are declared in config.
 ```
 
 Proves it worked:

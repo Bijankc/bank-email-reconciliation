@@ -845,3 +845,129 @@ The cost is a small formatter duplicated in JavaScript that already exists in
 TypeScript. Sharing it would mean a build step for three lines that do a
 division and a `padStart`, and the version in `app.js` is display-only: nothing
 downstream of it does arithmetic, which is the property that matters.
+
+## Phase 6 — simulator, dead-letter queue, README
+
+### 6.1 The poison hook is a reference value, and it throws between the audit write and the ledger
+
+**Decision.** An event whose `reference` is exactly `POISON-DLQ-DEMO` throws in
+the consumer, after the R2 write and before the Durable Object call.
+
+**Rejected.** A dedicated `source_channel`, throwing at the very top of the
+consumer, and a poison flag on the queue message.
+
+**Reason.** The position is the substance of this decision. Throwing before the
+audit write would leave a failed event with no artifact, which contradicts the
+audit-first ordering the rest of the system is built on and makes the poisoned
+event uninvestigable after it dies. Throwing after the ledger call would prove
+nothing about the retry path, because the event would already have been applied.
+Between the two is the only place that demonstrates what it claims: retries
+exhaust, the dead-letter queue receives it, no account is touched, and the raw
+payload is still there to look at.
+
+A reference rather than a `source_channel` because `source_channel` is part of
+the audit record and should describe where an event genuinely came from. A
+reference is data the bank supplies, and no bank issues this one.
+
+### 6.2 The dead-letter queue has a consumer, and it always acks
+
+**Decision.** `txn-events-dlq` is consumed by the same Worker, on a branch keyed
+off `batch.queue`. It logs at error level and acks every message.
+
+**Rejected.** Leaving the DLQ unconsumed, and retrying there.
+
+**Reason.** A dead-letter queue nobody reads is a queue where events go to be
+forgotten quietly, which is most of the way back to dropping them. A consumer
+that records the account and event id turns "something failed five times" into a
+line someone can act on.
+
+Acking rather than retrying is not a shortcut: a message arrives here precisely
+because it already failed every attempt on the main queue, so the same failure
+would repeat. Retrying would build a loop whose only output is noise.
+
+It also makes deferred row D6 partly checkable locally - the promotion to the
+DLQ can now be observed under `wrangler dev` rather than only reasoned about.
+
+### 6.3 Every simulator button posts to /webhook
+
+**Decision.** The panel builds a normalized event in the browser and POSTs it to
+the authenticated ingress, exactly as an external producer would.
+
+**Rejected.** A server-side `/demo/scenario/:name` endpoint that fires events
+internally, which would be less code.
+
+**Reason.** Spec 5.5 asks for a real external event source rather than internal
+fake-firing, and the distinction is what makes the demo evidence rather than
+theatre. A scenario that calls an internal function proves the ledger works. A
+scenario that posts over HTTP proves validation, the queue, the audit write, the
+ledger, the projection and the read path all work, in the order they run in
+production, including the delay before the dashboard catches up.
+
+### 6.4 The simulator reads the ledger before composing its next event
+
+**Decision.** Each scenario fetches the demo account's authoritative state,
+takes the current balance from it, and computes the next reported balance from
+that.
+
+**Rejected.** Tracking the running balance in page state.
+
+**Reason.** A balance remembered in the page can drift from the ledger - a
+refresh, a second tab, a scenario that partly failed - and every drift shows up
+as a gap the demo did not mean to create. Since a manufactured gap is exactly
+what one scenario is *supposed* to demonstrate, a drifting simulator would make
+the honest scenario indistinguishable from a bug. Reading the balance back means
+a gap appears only when a scenario deliberately withholds an event.
+
+### 6.5 Each demo session gets its own account
+
+**Decision.** The panel generates `NIMB:DEMO-XXXXXX` per browser session and
+offers a button to roll a new one.
+
+**Rejected.** A single fixed demo account, and a reset endpoint that wipes a
+ledger.
+
+**Reason.** Scenarios are only legible from a clean starting point: "a gap of
+exactly the missing amount" is hard to see on an account carrying four previous
+demonstrations. A fixed account would need resetting, and a reset endpoint means
+a way to destroy ledger history - a destructive operation added for the
+convenience of a demo, on the one store in the system that is supposed to be
+authoritative. Rolling a new account id costs nothing and exercises account
+self-creation from the first event.
+
+### 6.6 The README ships without images rather than with broken ones
+
+**Decision.** No image is linked from the README. `docs/images/README.md`
+records exactly which three views to capture, how to reach each one, and the
+rules the captures have to follow.
+
+**Rejected.** Linking images that do not exist yet, and describing screenshots
+that were never taken as though they had been.
+
+**Reason.** Capturing them needs a browser driven by hand, which was not
+available. The two ways to paper over that are both worse than the gap: linking
+missing files puts broken-image icons in the graded deliverable, and writing the
+demo section as if the images were there would be a claim about work that was
+not done. The README says the demo is described rather than shown and points at
+the deferred row, which is the same standard every other unverified thing in
+this project is held to.
+
+### 6.7 The README corrects the brief where the brief overstates
+
+**Decision.** Section 5 says plainly that a lost email does *not* poison every
+later balance check, and that re-anchor repairs the account's status rather than
+its arithmetic.
+
+**Rejected.** Repeating the stronger claim from the brief, which would have read
+better.
+
+**Reason.** In the adjacency model the brief itself specifies, each check
+compares against the previous *reported* balance rather than a running total
+computed from movements, so a break cannot propagate past the adjacency it
+belongs to. Re-anchor is still worth building - without it an account with one
+permanently lost email is red forever, and a status that can never be green is a
+status nobody reads - but that is a different and smaller claim than the one the
+brief makes.
+
+A README that overstates its own mechanism is exactly the kind of thing that
+falls apart under one good question, and the weaker claim is both true and
+sufficient.
