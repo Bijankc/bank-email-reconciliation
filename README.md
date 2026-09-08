@@ -1,5 +1,13 @@
 # Bank Email Reconciliation Engine
 
+> **Status: runs under local emulation, and has never been deployed.** Everything
+> here is built and verified with `wrangler dev` and `vitest`. No Cloudflare
+> resources exist, nothing has run on real infrastructure, and no bank email has
+> ever reached it — the parsers have only seen invented fixtures.
+> [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) is the runbook for what
+> deploying it would take; [`docs/DEFERRED.md`](docs/DEFERRED.md) lists every
+> claim a deployment would have to prove.
+
 **Your inbox shows every transaction you were told about. The running balance is the only thing that knows about the ones you weren't.**
 
 Two Nepali banks, NIMB and Nabil, send a transaction alert on every debit and credit. Each of those emails asserts two things at once: the **movement** — this debit, this credit — and the **available balance that resulted**. Read one at a time, they are notifications. Read as a sequence, they are a checkable claim.
@@ -301,7 +309,7 @@ Every fixture in `samples/redacted/` is invented — the account numbers, mercha
 
 ### Deploying, and configuring Email Routing
 
-**This has never been deployed.** It was built and verified entirely under local emulation, and everything that can only be checked against a real Cloudflare account is listed in [`docs/DEFERRED.md`](docs/DEFERRED.md) with the exact command and the result that would prove it. None of those rows is marked verified, because none of them has been run.
+**This has never been deployed.** It was built and verified entirely under local emulation, and everything that can only be checked against a real Cloudflare account is listed in [`docs/DEFERRED.md`](docs/DEFERRED.md) with the exact command and the result that would prove it. **Not one of those rows has been run**, because no Cloudflare resource exists to run them against. Two rows in that file are marked verified — that the dashboard renders in a browser and that the simulator scenarios drive the pipeline — and both are explicitly scoped to local emulation, which is a different claim from working on deployed infrastructure.
 
 [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) is the ordered runbook: every `wrangler` command with real arguments, every dashboard action, and every placeholder id in `wrangler.jsonc` with what replaces it. Email Routing is deliberately last, because it is the only step that costs money.
 
