@@ -218,15 +218,129 @@ curl -sI https://bank-email-reconciliation.<subdomain>.workers.dev/ | head -3
 
 Then open that URL in a browser. This is deferred rows D24 and D25.
 
-The dashboard reads are unauthenticated (see D22). Before forwarding real bank
-email, put Cloudflare Access in front of the Worker route: dashboard -> Zero
-Trust -> Access -> Applications -> Add an application -> Self-hosted, with the
-Worker hostname, and a policy allowing your own email. Free tier, no code
-change. The re-anchor endpoint stays bearer-authenticated underneath it.
+The dashboard reads are unauthenticated by design. **Step 7 puts Cloudflare
+Access in front of them and must be completed before Step 8**, which is what
+starts real bank email arriving.
 
 ---
 
-## Step 7 — Domain and Email Routing (LAST; costs money)
+## Step 7 — Cloudflare Access (REQUIRED, and it must come before Step 8)
+
+**Ordering constraint, stated here because getting it wrong is not recoverable:
+do this before Step 8.** Step 8 is what causes real bank email to start
+arriving. From the moment the first forward lands, the deployed Worker holds
+real balances, real merchants and a real masked account number, and the read API
+is unauthenticated by design — the dashboard polls it and a static page cannot
+hold a secret. `workers.dev` hostnames are enumerated and scanned continuously,
+so an unprotected window is not theoretical. Access first, then email.
+
+Access is free tier and needs no code change.
+
+### 7.1 — Two applications, in this order
+
+Access evaluates the **most specific path first**, so the bypass has to be its
+own application rather than a policy on the main one.
+
+**Application A — the webhook bypass.** Dashboard → *Zero Trust* → *Access* →
+*Applications* → *Add an application* → **Self-hosted**.
+
+| Field | Value |
+|---|---|
+| Application name | `bank-recon webhook` |
+| Session duration | No duration, expires immediately |
+| Subdomain / domain / path | `bank-email-reconciliation` / `<subdomain>.workers.dev` / `webhook` |
+
+Add one policy: Action **Bypass**, Include **Everyone**.
+
+This is deliberate, not a hole. `POST /webhook` is the simulator ingress and it
+is called by JavaScript in the page, not by a browser navigation — a login
+policy on it returns an Access HTML redirect where the simulator expects JSON,
+and every scenario breaks. It carries its own protection: a constant-time bearer
+check against `SIMULATOR_TOKEN` that fails closed if the secret is unset
+(`src/auth.ts`). Treat that token as the credential that guards this path, and
+generate it with the command in Step 6 rather than choosing one.
+
+**Application B — everything else.** *Add an application* → **Self-hosted**.
+
+| Field | Value |
+|---|---|
+| Application name | `bank-recon dashboard` |
+| Session duration | 24 hours |
+| Subdomain / domain / path | `bank-email-reconciliation` / `<subdomain>.workers.dev` / *(leave path empty)* |
+
+Add one policy: Action **Allow**, Include → **Emails** → your own address.
+
+Under *Authentication*, enable **One-time PIN**. No identity provider is needed.
+
+> **Why one-time PIN and not a service token.** A service token authenticates a
+> `curl` carrying two headers; it cannot log a browser in. This dashboard has to
+> open on a phone, and typing a code from an email is the only method that works
+> there without configuring an IdP. Service tokens are the right answer for
+> machine callers, which here is `/webhook` — and that path is bypassed instead,
+> because it already has a bearer secret and adding a second credential would
+> mean the page needs both.
+
+### 7.2 — What Application B now covers
+
+Every route in `src/index.ts` except the bypassed one. Worth checking against the
+source rather than trusting this list:
+
+| Route | Covered by Access |
+|---|---|
+| `GET /` and the static assets (`/app.js`, `/simulator.js`, `/styles.css`) | Yes |
+| `GET /health` | Yes |
+| `GET /api/accounts` | Yes |
+| `GET /api/accounts/:id` (and `?authoritative=true`) | Yes |
+| `GET /api/accounts/:id/audit` | Yes |
+| `POST /api/accounts/:id/force-window` | Yes |
+| `POST /api/accounts/:id/gaps/:gapId/accept` | Yes |
+| `POST /webhook` | **No — bypassed by Application A** |
+
+The two `POST /api/...` routes are called from the dashboard by a logged-in
+browser, so the Access session cookie rides along and they keep working. They
+also still require the bearer token underneath.
+
+### 7.3 — Prove it before moving on
+
+Logged out, from a terminal with no Access cookie:
+
+```bash
+HOST=https://bank-email-reconciliation.<subdomain>.workers.dev
+
+curl -si "$HOST/api/accounts" | head -5
+# EXPECT: HTTP/2 302 and a `location:` header pointing at
+#   https://<your-team>.cloudflareaccess.com/cdn-cgi/access/login/...
+# FAIL:   HTTP/2 200 and a JSON body containing "accounts". If you see account
+#         data here, Access is not covering the route. Do not continue to Step 8.
+
+curl -si "$HOST/" | head -5
+# EXPECT: the same 302 to the Access login.
+```
+
+Then confirm the bypass did not break the simulator:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}
+" -X POST "$HOST/webhook"   -H "authorization: Bearer $TOKEN"   -H "content-type: application/json"   -d '{"account_id":"NIMB:DEMO-ACCESS","bank":"NIMB","direction":"DEBIT",
+       "amount_paisa":50000,"reported_balance_paisa":950000,
+       "occurred_at":"2026-04-01T09:00:00Z","reference":"accesscheck01"}'
+# EXPECT: 202. The event is queued.
+# FAIL:   302 — Application A is missing, or its path does not match /webhook.
+#         The simulator panel will be broken in the browser too.
+
+curl -s -o /dev/null -w "%{http_code}
+" -X POST "$HOST/webhook"   -H "content-type: application/json" -d '{}'
+# EXPECT: 401. The bypass removes the Access login, not the bearer check.
+```
+
+Finally, open `$HOST/` in a browser: you should get a one-time-PIN prompt,
+receive a code by email, and land on the dashboard.
+
+Only when all four of those behave as described, continue to Step 8.
+
+---
+
+## Step 8 — Domain and Email Routing (LAST; costs money)
 
 This is the only paid dependency in the project (~$10/yr) and the only step that
 cannot be done without it. Everything above is free tier.

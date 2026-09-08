@@ -203,7 +203,11 @@ One `HTMLRewriter` detail worth recording because it cost a failing test: a `tex
 
 **Money is integer paisa everywhere.** `parseFloat("7310.55") * 100` is `731054.9999999999`, and that is the whole argument. Amounts are parsed by stripping commas, splitting on the decimal point and computing `rupees * 100 + paisa`. No float touches a money value at any layer — not in the parsers, not in the Durable Object, not in D1, not in an API response. The only division by 100 in the system is in the browser at render time.
 
-**Timestamps** are normalized to `YYYY-MM-DDTHH:MM:SSZ` from two unrelated formats (`28Aug26 14:38:20` and `2026-08-28 14:20`, the latter with no seconds). Neither bank states a timezone, so the wall clock the bank printed is preserved rather than shifted, and the `Z` is a formatting convention rather than a claim about UTC. Since both banks stamp the same local zone, a uniform offset cannot change their relative order, and ordering is all the chain depends on. The trade-off is that `occurred_at` is not a true instant and must not be compared against `Date.now()`; nothing in the engine does. This is [`docs/DECISIONS.md`](docs/DECISIONS.md) 1.1 and deferred check D14.
+**Timestamps** are normalized to `YYYY-MM-DDTHH:MM:SSZ` from two unrelated formats (`28Aug26 14:38:20` and `2026-08-28 14:20`, the latter with no seconds). Neither bank states a timezone. Both are taken to stamp Nepal Standard Time and are converted to true UTC, so `28Aug26 14:38:20` is stored as `2026-08-28T08:53:20Z`.
+
+The reason is one time base across the schema. `applied_at`, `detected_at`, `promote_at` and `received_at` all come from `Date.toISOString()` and are genuinely UTC. An `occurred_at` sitting beside them in the same format with the same `Z` suffix, but carrying local time, would make every comparison across those columns wrong by 5h45m — silently, and only once something started comparing them. A freshness check, or a measure of how late a forwarded email arrived, would each read correctly and be wrong. Converting removes the category rather than documenting the trap.
+
+The dashboard renders these back in `Asia/Kathmandu`, so the digits on screen match the digits in the alert email. Storage is UTC; exactly one place in the system applies a timezone. See [`docs/DECISIONS.md`](docs/DECISIONS.md) 1.1 and 7.1.
 
 ## 10. Reliability primitives
 
@@ -281,7 +285,7 @@ Every fixture in `samples/redacted/` is invented — the account numbers, mercha
 
 [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) is the ordered runbook: every `wrangler` command with real arguments, every dashboard action, and every placeholder id in `wrangler.jsonc` with what replaces it. Email Routing is deliberately last, because it is the only step that costs money.
 
-**Before pointing it at a real inbox, read D22.** The read API is unauthenticated, as specified — the dashboard polls it and a static page cannot hold a secret. Deployed as-is with real bank email flowing in, `/api/accounts` publishes real balances, merchants and masked account numbers to anyone with the URL. The fix is an identity layer in front of the Worker route (Cloudflare Access, free tier, no code change) and the runbook says where to put it.
+**Cloudflare Access is required before the first email forward.** Not optional, and not something to add afterwards. The read API is unauthenticated by design, so a deployed instance with real bank email flowing in publishes real balances, merchants and masked account numbers to anyone who finds the URL — and `workers.dev` hostnames get scanned. The runbook configures Access as a step that precedes Email Routing, with a bypass for `POST /webhook` so the simulator keeps working on its own bearer token. Free tier, no code change.
 
 ### Cost
 
@@ -301,9 +305,15 @@ Free-tier limits change. Check <https://developers.cloudflare.com/workers/platfo
 
 **The parsers are format-specific and will break on rewording.** A versioned event schema protects everything downstream of the parse; it does nothing for the parse itself. The NIMB positional comma-blob will break first.
 
+**The Nepal timezone assumption is now load-bearing.** `occurred_at` is stored as a true UTC instant on the assumption that both banks stamp UTC+05:45. Neither states a zone, so this is inferred rather than known. If it is wrong, `occurred_at` is not mislabelled — it is a genuinely wrong instant, off by up to 5h45m, and anything derived from it inherits the error. Sort order within one account survives regardless, since a single ledger only ever holds one bank's timestamps and a constant offset cannot reorder them, so reconciliation itself is unaffected either way. Confirming it needs a real email, whose `Date:` header can be compared against the stamp in its body; that is deferred check D14 and it is open.
+
 **One paid dependency** — the domain, above.
 
-**Privacy.** Real bank emails carry your name, your balances, and your merchants. Everything committed here is redacted and invented: no real account number, merchant, balance or reference appears in any fixture, test or screenshot. The R2 audit bucket is the one place real emails would land, and it is configured to stay private — no public custom domain, no `r2.dev` access — with a comment in `wrangler.jsonc` saying why. Do not point a public deployment at a real inbox without reading D22 first.
+**Privacy, and the access control this needs before it sees a real inbox.** Real bank emails carry your name, your balances, and your merchants. Everything committed to this repository is invented: no real account number, merchant, balance or reference appears in any fixture, test or screenshot.
+
+A deployment pointed at a real inbox is a different matter. The read API is unauthenticated by design — the dashboard polls it and a static page cannot hold a secret — so **Cloudflare Access in front of the Worker route is a prerequisite for the first email forward, not later hardening.** `workers.dev` hostnames are enumerated and scanned; there is no window in which an unprotected deployment is merely theoretical. The setup runbook configures Access *before* Email Routing for that reason.
+
+Be precise about what that buys. Access protects the read surface: the dashboard and the `/api` endpoints. It does not protect R2 — if the audit bucket were ever given public access it would serve raw bank emails to anyone, independently of Access — which is why `bank-recon-audit` has no public custom domain and no `r2.dev` access, and why `wrangler.jsonc` carries a comment saying so. It also does not protect `/webhook`, which is deliberately excluded from the Access policy so the simulator can still reach it, and remains protected only by its bearer token.
 
 **It has not been deployed, and the dashboard has not been opened in a browser.** Every claim in this README is backed by a passing test or a `wrangler dev` session captured in a pull request, and the ones that are not are in `docs/DEFERRED.md` rather than being implied here.
 

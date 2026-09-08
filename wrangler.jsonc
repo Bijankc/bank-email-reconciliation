@@ -11,7 +11,9 @@
   //   3. queue     txn-events
   //   4. queue     txn-events-dlq
   //   5. secret    SIMULATOR_TOKEN
-  //   6. domain + Email Routing rule    (last; needs a purchased domain)
+  //   6. Cloudflare Access on the Worker route  (BEFORE step 7; the read API
+  //      is unauthenticated and step 7 is what makes the data real)
+  //   7. domain + Email Routing rule    (last; needs a purchased domain)
   // The exact commands are in docs/CLOUDFLARE_SETUP.md.
   // ---------------------------------------------------------------------------
   "name": "bank-email-reconciliation",
