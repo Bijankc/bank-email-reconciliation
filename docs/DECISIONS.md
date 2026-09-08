@@ -101,8 +101,12 @@ required by the deferred checks D3 and D4.
 
 **Reason.** The repository is public and the brief contains non-technical
 strategy language that does not belong in a submitted repository. A stripped
-technical version at `docs/design.md` would be useful, but that is the owner's
-call to make, not a default to assume.
+technical version at `docs/design.md` would have been the alternative, and that
+was the owner's call to make rather than a default to assume.
+
+**Resolved:** no `docs/design.md`. The brief stays gitignored and uncommitted,
+and no derived version of it is produced. The design rationale lives in this
+file, written as each decision was made, and in the README.
 
 ### 0.8 Local emulation only; account-scoped ids stay literal placeholders
 
