@@ -188,6 +188,17 @@ records the check that settles it against a real email, and it stays open.
 The offset is a fixed constant rather than a timezone database lookup because
 Nepal has no daylight saving and has not changed offset since 1986.
 
+**This was only free to change because nothing was deployed.** The conversion
+rewrites what `occurred_at` means, and it does not touch rows already stored. A
+ledger holding events from both sides of the change would carry two time bases
+in one column, and since the chain sorts on `occurred_at`, a pre-conversion
+event and a post-conversion event could sort into the wrong order relative to
+each other - which is the one failure the whole design is built to avoid. Local
+emulation state showed exactly this after the change, harmlessly. Had there been
+real data, this would have needed a migration that rewrote every stored
+`occurred_at`, not a parser edit. Any future change to the time base has to
+carry one.
+
 ### 1.2 Nabil is read with HTMLRewriter, and its columns are found by header text
 
 **Decision.** The Nabil table is parsed by streaming it through `HTMLRewriter`,
