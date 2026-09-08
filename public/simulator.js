@@ -8,6 +8,7 @@
 // The scenarios exist to make five claims checkable in a few seconds rather
 // than believable on the strength of a README paragraph.
 
+const SIM_TOKEN_KEY = "simulator-token";
 const SIM_ACCOUNT_KEY = "simulator-account";
 const SIM_HELD_KEY = "simulator-held-event";
 const POISON_REFERENCE = "POISON-DLQ-DEMO";
@@ -23,6 +24,9 @@ function demoAccount() {
 
 function newDemoAccount() {
   const suffix = Math.random().toString(36).slice(2, 8).toUpperCase();
+  // The DEMO- prefix is load-bearing on a deployment, not cosmetic: the Worker
+  // is configured to refuse simulator events for any other account id. The
+  // same prefix is DEMO_ACCOUNT_PREFIX in src/validate.ts.
   const id = `NIMB:DEMO-${suffix}`;
   sessionStorage.setItem(SIM_ACCOUNT_KEY, id);
   sessionStorage.removeItem(SIM_HELD_KEY);
@@ -87,7 +91,20 @@ async function post(event, token) {
     },
     body: JSON.stringify(event),
   });
-  return { status: response.status, body: await response.json() };
+  const body = await response.json();
+
+  if (response.status === 401) {
+    throw new Error(
+      "Rejected. /webhook takes SIMULATOR_TOKEN, which is a different secret from OPERATOR_TOKEN.",
+    );
+  }
+  if (response.status === 422 && Array.isArray(body.errors)) {
+    // Most likely the deployment fence: this Worker only accepts simulator
+    // events for DEMO- accounts, and the panel is posting something else.
+    throw new Error(body.errors.map((e) => `${e.field}: ${e.message}`).join("; "));
+  }
+
+  return { status: response.status, body };
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +217,12 @@ const SCENARIOS = [
       );
       const body = await response.json();
       if (response.status !== 200) {
-        say(body.error || `Failed with ${response.status}`, true);
+        say(
+          response.status === 401
+            ? "Rejected. Force-window takes SIMULATOR_TOKEN."
+            : body.error || `Failed with ${response.status}`,
+          true,
+        );
         return;
       }
       say(
@@ -255,13 +277,23 @@ function buildSimulator(container, onChanged) {
 
   const token = document.createElement("input");
   token.type = "password";
-  token.placeholder = "Operator token";
+  // SIMULATOR_TOKEN, not the operator's. Stored under its own key so the two
+  // never overwrite each other between the panel and the re-anchor form.
+  token.placeholder = "SIMULATOR_TOKEN";
   token.className = "sim-token";
-  token.value = sessionStorage.getItem("operator-token") || "";
+  token.value = sessionStorage.getItem(SIM_TOKEN_KEY) || "";
   token.addEventListener("change", () =>
-    sessionStorage.setItem("operator-token", token.value),
+    sessionStorage.setItem(SIM_TOKEN_KEY, token.value),
   );
   container.append(token);
+
+  container.append(
+    text(
+      "p",
+      "These buttons use SIMULATOR_TOKEN. Accepting a gap uses OPERATOR_TOKEN, a different secret, entered on the gap itself.",
+      "token-hint",
+    ),
+  );
 
   const note = document.createElement("p");
   note.className = "note";
@@ -284,10 +316,10 @@ function buildSimulator(container, onChanged) {
     button.textContent = scenario.label;
     button.addEventListener("click", async () => {
       if (token.value === "") {
-        say("Enter the operator token first.", true);
+        say("Enter SIMULATOR_TOKEN first.", true);
         return;
       }
-      sessionStorage.setItem("operator-token", token.value);
+      sessionStorage.setItem(SIM_TOKEN_KEY, token.value);
       button.disabled = true;
       say(`Running: ${scenario.label}…`);
       try {

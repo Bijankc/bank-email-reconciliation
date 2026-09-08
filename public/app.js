@@ -7,6 +7,11 @@
 
 const POLL_MS = 4000;
 
+// Two secrets guard two different things, and the page holds them separately so
+// that pasting one into the other's field fails visibly here rather than as an
+// unexplained 401 from the server.
+const OPERATOR_TOKEN_KEY = "operator-token";
+
 const el = (id) => document.getElementById(id);
 const accountsView = el("accounts-view");
 const detailView = el("detail-view");
@@ -258,6 +263,13 @@ function reanchorControl(accountId, gap) {
       "note",
     ),
   );
+  form.append(
+    text(
+      "div",
+      "Authorised by OPERATOR_TOKEN — not the simulator secret.",
+      "token-hint",
+    ),
+  );
 
   const reason = document.createElement("input");
   reason.type = "text";
@@ -267,11 +279,13 @@ function reanchorControl(accountId, gap) {
   const token = document.createElement("input");
   token.type = "password";
   token.required = true;
-  token.placeholder = "Operator token";
+  // Named explicitly. This is OPERATOR_TOKEN, not the simulator's secret, and
+  // the two are not interchangeable.
+  token.placeholder = "OPERATOR_TOKEN";
   // Kept for the session only, and never written into the page. A static
   // dashboard cannot hold a secret, so the operator supplies it per session
   // instead of it being shipped to every visitor.
-  token.value = sessionStorage.getItem("operator-token") || "";
+  token.value = sessionStorage.getItem(OPERATOR_TOKEN_KEY) || "";
 
   const row = document.createElement("div");
   row.className = "row";
@@ -291,7 +305,7 @@ function reanchorControl(accountId, gap) {
     note.className = "note";
     note.textContent = "Accepting…";
 
-    sessionStorage.setItem("operator-token", token.value);
+    sessionStorage.setItem(OPERATOR_TOKEN_KEY, token.value);
 
     const { status, body } = await api(
       `/api/accounts/${encodeURIComponent(accountId)}/gaps/${encodeURIComponent(gap.gap_id)}/accept`,
@@ -307,7 +321,12 @@ function reanchorControl(accountId, gap) {
 
     if (status !== 200) {
       note.className = "note error";
-      note.textContent = body.error || `Failed with ${status}`;
+      // A 401 here is nearly always the simulator token pasted into the wrong
+      // field, so say that rather than leaving the operator to guess.
+      note.textContent =
+        status === 401
+          ? "Rejected. This route takes OPERATOR_TOKEN, which is a different secret from the simulator's SIMULATOR_TOKEN."
+          : body.error || `Failed with ${status}`;
       submit.disabled = false;
       return;
     }
