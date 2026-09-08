@@ -1,7 +1,14 @@
 # Demo images
 
-Empty on purpose: no image is linked from the README, so nothing there is
-broken. Tracked as **D26** in `../DEFERRED.md`.
+Captured 2026-09-08 against a local `wrangler dev` run, following `../DEMO.md`.
+
+| File | Status |
+|---|---|
+| `gap-detail.png` | Committed. Linked from README section 2. |
+| `reanchor.png` | Committed. Linked from README section 2. |
+| `accounts.png` | **Not captured.** Nothing links to it, so no image URL is broken. |
+
+Tracked as **D26** in `../DEFERRED.md`.
 
 ## What to capture
 
