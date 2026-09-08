@@ -719,3 +719,129 @@ events.
 plausible-looking empty ledger, and the projected and authoritative paths would
 disagree about whether an account exists. Treating "no events" as "no account"
 makes the two paths agree.
+
+## Phase 5 — the dashboard
+
+### 5.1 The dashboard is served by this Worker, not by a separate Pages project
+
+**Decision.** `public/` is configured as the Worker's static assets. One deploy
+serves the page and the API from the same origin; a request matching a file is
+served at the edge without invoking the Worker, and everything else falls
+through to `fetch()`.
+
+**Rejected.** A separate Cloudflare Pages project calling the Worker
+cross-origin, which is what spec 2 and spec 10 describe.
+
+**Reason.** Two projects means two deploys, a second URL, and a CORS layer -
+preflight handling in the Worker, an allowlist that has to name the Pages
+domain, and a class of failure where the dashboard is up and every request it
+makes fails. All of that is configuration in service of a separation that buys
+nothing here: the page and the API ship together and version together.
+
+Same-origin also removes the awkward part of the re-anchor control. A
+cross-origin write needs its credentials handled explicitly; a same-origin POST
+does not.
+
+The wider context is that Workers static assets is where Cloudflare has moved
+this capability - Pages remains for existing projects, and new work of this
+shape targets Workers. Following the brief exactly would mean building on the
+older of the two paths in order to match a sentence.
+
+### 5.2 The page polls, and says when it last updated
+
+**Decision.** A four-second timer re-fetches whatever is on screen, and the
+header shows the time of the last successful update.
+
+**Rejected.** Fetching once on load, and pushing updates over a WebSocket.
+
+**Reason.** The D1 read model is eventually consistent and the brief asks for
+that to be visible (spec 10). A page that loads once hides the lag behind a
+manual refresh; a WebSocket hides it in the other direction, by making the read
+model look instantaneous. A visible timer makes the lag something you can watch:
+post an event, and the balance changes a moment later, exactly as the
+architecture says it will.
+
+The timestamp in the header exists so a stalled page cannot be mistaken for a
+quiet account.
+
+### 5.3 The operator token is typed per session, never shipped with the page
+
+**Decision.** The re-anchor form asks for the token, keeps it in
+`sessionStorage`, and sends it as a bearer header. The static assets contain no
+secret.
+
+**Rejected.** Embedding a token in the JavaScript, and dropping auth on the
+accept endpoint because the dashboard is "internal".
+
+**Reason.** Anything shipped to the browser is public, so a token in `app.js`
+would not be authentication - it would be a password printed on the door. The
+alternative of leaving the write unauthenticated is worse: accepting a gap is
+the one operation that records a human taking responsibility for a discrepancy,
+and it must not be something a stranger with the URL can do.
+
+Asking for the token per session is the honest middle. It is not a real identity
+system, and the real answer for a deployment is an identity layer in front of
+the whole thing - which is the same fix DEFERRED D22 names for the read
+endpoints.
+
+### 5.4 Accepting a gap requires a reason, enforced server-side
+
+**Decision.** The endpoint returns 422 when `reason` is missing or blank. The
+form marks it required too, but the server is what enforces it.
+
+**Rejected.** An optional reason with a default like "accepted by operator".
+
+**Reason.** The accepted delta stays in the ledger permanently, and the point of
+keeping it is that someone can come back later and ask why the chain has a hole
+in it. A row that answers "accepted by operator" answers nothing; it is
+indistinguishable from a gap accepted by a mis-click. The reason is the entire
+value of the record, so it is not optional.
+
+### 5.5 The re-anchor control appears only on a confirmed gap
+
+**Decision.** The accept form is rendered for `CONFIRMED_GAP` and for nothing
+else. A pending gap shows an explanation of the window instead.
+
+**Rejected.** Showing the control on every gap and letting the server refuse.
+
+**Reason.** The server does refuse - the ledger returns an error and the endpoint
+answers 409 - but an offered control that fails when used teaches the operator
+that the interface lies. Not offering it says the thing the two-stage lifecycle
+exists to say: this discrepancy might still be a late email, and there is
+nothing to decide yet.
+
+### 5.6 Force-window is an API endpoint from this phase, not a Phase 6 addition
+
+**Decision.** `POST /api/accounts/:id/force-window` ships here, bearer
+authenticated, running exactly the promotion the alarm runs. The button that
+calls it belongs to the simulator panel in the next phase.
+
+**Rejected.** Waiting for the simulator phase, and shortening the window in
+development builds.
+
+**Reason.** The re-anchor control is part of this phase and cannot be exercised
+without it: accepting requires a `CONFIRMED_GAP`, and the only other route to
+one is waiting 48 hours. Building a control that cannot be demonstrated in the
+phase that builds it is not finishing it.
+
+Shortening the window under a development flag was the alternative and is worse:
+it makes the deployed system behave differently from the tested one, and the
+difference is in the exact mechanism the two-stage lifecycle rests on.
+
+### 5.7 Money is formatted in the browser, and only there
+
+**Decision.** The API returns integer paisa everywhere. `app.js` divides by 100
+once, at render time.
+
+**Rejected.** Returning pre-formatted strings, or a `rupees` float alongside the
+paisa.
+
+**Reason.** A float on the wire is a float someone downstream will do arithmetic
+with, and the unit pin exists precisely to stop that. Formatting strings on the
+server would keep the API safe but make it useless for anything that is not this
+page.
+
+The cost is a small formatter duplicated in JavaScript that already exists in
+TypeScript. Sharing it would mean a build step for three lines that do a
+division and a `padStart`, and the version in `app.js` is display-only: nothing
+downstream of it does arithmetic, which is the property that matters.

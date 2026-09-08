@@ -1,0 +1,377 @@
+/* Plain CSS, no build step and no CDN: the dashboard is three static files
+   served by the same Worker that serves the API. */
+
+:root {
+  --bg: #fbfbf9;
+  --panel: #ffffff;
+  --ink: #1b1b1a;
+  --muted: #6b6b66;
+  --line: #e3e3de;
+  --accent: #1f5f4d;
+  --warn: #8a5a00;
+  --bad: #9b2c2c;
+  --good: #1f5f4d;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a;
+    --panel: #1d1f23;
+    --ink: #e8e8e4;
+    --muted: #9a9a94;
+    --line: #2c2f35;
+    --accent: #6fd0ae;
+    --warn: #e0b062;
+    --bad: #f08a8a;
+    --good: #6fd0ae;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.bar {
+  padding: 22px 28px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 30px 0 8px;
+}
+
+main {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 26px 28px 80px;
+}
+
+.sub,
+.hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hint {
+  max-width: 62ch;
+}
+
+.poll {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+/* ---- tables ---- */
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.grid th,
+.grid td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.grid thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.grid tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.grid tbody tr.clickable {
+  cursor: pointer;
+}
+
+.grid tbody tr.clickable:hover {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+td.num {
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.empty td {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---- status pills ---- */
+
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 100px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.pill.RECONCILED,
+.pill.ok {
+  color: var(--good);
+}
+
+.pill.PENDING_REVIEW,
+.pill.PENDING_GAP {
+  color: var(--warn);
+}
+
+.pill.GAP_CONFIRMED,
+.pill.CONFIRMED_GAP,
+.pill.broken {
+  color: var(--bad);
+}
+
+.pill.NEW,
+.pill.ACCEPTED_GAP,
+.pill.anchor {
+  color: var(--muted);
+}
+
+/* ---- detail ---- */
+
+.detail-head {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.toggle {
+  font-size: 13px;
+  text-align: right;
+}
+
+.toggle label {
+  cursor: pointer;
+  user-select: none;
+}
+
+.back {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--ink);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.card .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.card .value {
+  font-family: var(--mono);
+  font-size: 19px;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- gaps ---- */
+
+.gap {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.gap.CONFIRMED_GAP {
+  border-left-color: var(--bad);
+}
+
+.gap.ACCEPTED_GAP {
+  border-left-color: var(--muted);
+}
+
+.gap-head {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.gap .delta {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gap .between {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  margin-top: 6px;
+  word-break: break-all;
+}
+
+.reanchor {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.reanchor input {
+  font: inherit;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  width: 100%;
+}
+
+.reanchor .row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.reanchor .row input {
+  flex: 1 1 220px;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--panel);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button:hover {
+  filter: brightness(1.08);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.note.error {
+  color: var(--bad);
+}
+
+.fillable {
+  color: var(--warn);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* ---- audit ---- */
+
+.audit-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.audit-row:last-child {
+  border-bottom: none;
+}
+
+#audit {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: 12px;
+}
