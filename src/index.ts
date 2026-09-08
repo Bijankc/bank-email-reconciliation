@@ -35,9 +35,15 @@ async function health(env: Env): Promise<Response> {
 
   await record("d1", () => env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first());
   await record("r2", () => env.AUDIT.list({ limit: 1 }));
+  let ledgerSchemaVersion: number | null = null;
   await record("durable_object", async () => {
     const stub = env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName("__health__"));
-    return stub.status();
+    // The DO schema version is reported separately from the event schema
+    // version: they move independently, and a Durable Object that failed to
+    // migrate is otherwise invisible until the first transaction hits it.
+    const status = await stub.status();
+    ledgerSchemaVersion = status.ledger_schema_version;
+    return status;
   });
   // A queue producer has no read side, so presence of the binding is all that
   // can be checked without emitting a message the consumer would have to eat.
@@ -48,7 +54,12 @@ async function health(env: Env): Promise<Response> {
   checks["simulator_token"] = env.SIMULATOR_TOKEN ? "configured" : "unset";
 
   return json(
-    { ok: healthy, schema_version: SCHEMA_VERSION, checks },
+    {
+      ok: healthy,
+      schema_version: SCHEMA_VERSION,
+      ledger_schema_version: ledgerSchemaVersion,
+      checks,
+    },
     healthy ? 200 : 503,
   );
 }
