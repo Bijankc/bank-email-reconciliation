@@ -1,5 +1,13 @@
 # Bank Email Reconciliation Engine
 
+> **Status: runs under local emulation, and has never been deployed.** Everything
+> here is built and verified with `wrangler dev` and `vitest`. No Cloudflare
+> resources exist, nothing has run on real infrastructure, and no bank email has
+> ever reached it — the parsers have only seen invented fixtures.
+> [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) is the runbook for what
+> deploying it would take; [`docs/DEFERRED.md`](docs/DEFERRED.md) lists every
+> claim a deployment would have to prove.
+
 **Your inbox shows every transaction you were told about. The running balance is the only thing that knows about the ones you weren't.**
 
 Two Nepali banks, NIMB and Nabil, send a transaction alert on every debit and credit. Each of those emails asserts two things at once: the **movement** — this debit, this credit — and the **available balance that resulted**. Read one at a time, they are notifications. Read as a sequence, they are a checkable claim.
@@ -38,7 +46,23 @@ The interesting behaviour, all of it demonstrable from the simulator panel in a 
 
 Each of those is a test in `test/ledger.test.ts` and `test/consumer.test.ts` as well as a button.
 
-> **Screenshots are not yet in this README.** `docs/images/` is empty and no image is linked from this file, so nothing here is broken — but the demo above is described rather than shown. `docs/images/README.md` lists exactly which three views to capture and the seed that produces them. This is tracked as D26 in [`docs/DEFERRED.md`](docs/DEFERRED.md).
+### A gap opening
+
+![An account detail view. The summary reads: balance 8,830.00, 2 transactions, 1 open gap, status "pending review". A gap card states "-600.00 unaccounted" between two named event ids. Below, the timeline shows two debits; the second is marked "broken", with "expected 9,430.00" and "off by -600.00".](docs/images/gap-detail.png)
+
+Two debits arrived. The bank said the balance was 9,550.00 after the first and 8,830.00 after the second, but the second debit was only 120.00 — so the balances disagree with the movements by exactly 600.00. **That difference is a transaction that happened and sent no email**, and the engine states its size precisely while saying nothing about its cause. The gap is `PENDING_GAP` because at this moment a late email could still explain it.
+
+Note what is *not* flagged: the first row reads `anchor`, because reconciliation is a property of adjacencies and the first event has nothing before it to chain from.
+
+### Re-anchoring past a gap that will never fill
+
+![The same view after the resolution window has closed. The status card reads "gap confirmed", the gap card is now "confirmed gap" with a red edge, and it has expanded to show a re-anchor form: an explanatory paragraph, a line reading "Authorised by OPERATOR_TOKEN — not the simulator secret", a reason field, a token field, and an "Accept and re-anchor" button.](docs/images/reanchor.png)
+
+The window elapsed with no filling email, so a Durable Object alarm promoted the gap to `CONFIRMED_GAP` — no cron worker, no external scheduler. Only now does the re-anchor control appear: accepting a gap while it is still pending would discard the one mechanism that distinguishes a late email from a lost one.
+
+The reason field is required and enforced server-side, because the accepted delta is kept permanently and a record that cannot say *why* answers nothing. Accepting marks the discontinuity as one a human took responsibility for; it does not erase it, and the timeline row stays marked broken afterwards.
+
+Both screenshots are taken against simulator-generated data — `DEMO-` accounts, invented merchants, fabricated balances and references. Nothing in them is blurred or cropped, because none of it is real.
 
 ## 3. Architecture
 
@@ -255,12 +279,14 @@ This is the same discipline as versioned structured-message exchange in EDI, whe
 
 ### Locally
 
-```bash
+```powershell
 npm install
-cp .dev.vars.example .dev.vars     # then set SIMULATOR_TOKEN to any value
-npm run db:local                   # applies both migrations to the local D1
-npm run dev                        # wrangler dev, all bindings emulated locally
+Copy-Item .dev.vars.example .dev.vars   # then set both tokens to any values
+npm run db:local                        # applies both migrations to the local D1
+npm run dev                             # wrangler dev, all bindings emulated locally
 ```
+
+On POSIX shells, `cp .dev.vars.example .dev.vars`. The runbook is PowerShell-first; see its "Shell conventions" section for the four other differences that matter.
 
 Open <http://127.0.0.1:8787>. The simulator panel drives everything. It asks for `SIMULATOR_TOKEN`; accepting a gap asks for `OPERATOR_TOKEN`, which is a separate secret — both are in `.dev.vars`.
 
@@ -283,7 +309,7 @@ Every fixture in `samples/redacted/` is invented — the account numbers, mercha
 
 ### Deploying, and configuring Email Routing
 
-**This has never been deployed.** It was built and verified entirely under local emulation, and everything that can only be checked against a real Cloudflare account is listed in [`docs/DEFERRED.md`](docs/DEFERRED.md) with the exact command and the result that would prove it. None of those rows is marked verified, because none of them has been run.
+**This has never been deployed.** It was built and verified entirely under local emulation, and everything that can only be checked against a real Cloudflare account is listed in [`docs/DEFERRED.md`](docs/DEFERRED.md) with the exact command and the result that would prove it. **Not one of those rows has been run**, because no Cloudflare resource exists to run them against. Two rows in that file are marked verified — that the dashboard renders in a browser and that the simulator scenarios drive the pipeline — and both are explicitly scoped to local emulation, which is a different claim from working on deployed infrastructure.
 
 [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) is the ordered runbook: every `wrangler` command with real arguments, every dashboard action, and every placeholder id in `wrangler.jsonc` with what replaces it. Email Routing is deliberately last, because it is the only step that costs money.
 

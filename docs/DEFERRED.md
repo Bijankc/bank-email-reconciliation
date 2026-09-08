@@ -1,12 +1,22 @@
 # Deferred verification
 
-Everything in this project is built and verified under local emulation. There is
-no Cloudflare account attached, so the rows below have **not** been checked and
-must not be described as working. Each row states the exact check and the result
-that proves it.
+This project is built under local emulation. Each row states the exact check and
+the result that proves it.
 
-**No row here is ever marked verified from a local run.** A row is verified when
-it has been executed against a real account, and only then.
+**A row is verified only by the check it names, run in the environment it names.**
+Almost every row here names a deployed Cloudflare account, and no such row may be
+marked verified from a local run - `wrangler dev` is not evidence about
+production, and a passing test is not evidence that a binding resolves remotely.
+
+A small number of rows are about behaviour that is genuinely local: whether the
+dashboard renders in a browser, whether the simulator scenarios drive the
+pipeline. Those can be closed by running them locally, and where they are, the
+status column says so explicitly - `Verified (local emulation only)` is a
+different claim from `Verified`, and the deployed equivalent stays open
+underneath it.
+
+Nothing below has been checked against a real account. As of 2026-09-08 no
+Cloudflare resource exists for this project.
 
 | # | What must be checked | How to check it | Result that proves it | Status |
 |---|---|---|---|---|
@@ -34,9 +44,9 @@ it has been executed against a real account, and only then.
 | D22 | **Cloudflare Access is live on the Worker route before the first email forward.** Decided: required, not optional. The read API is unauthenticated by design and `workers.dev` hostnames are scanned, so this is a prerequisite for Step 8 rather than later hardening | Step 7 of `CLOUDFLARE_SETUP.md`, then logged out: `curl -si https://<host>/api/accounts` | A `302` to `<team>.cloudflareaccess.com`, **not** a `200` carrying account JSON. If account data comes back, Access is not covering the route and Email Routing must not be enabled | Not verified |
 | D23 | Migration `0002_gap_bounds.sql` applies cleanly to a remote D1 that already has `0001_init.sql` | `npx wrangler d1 execute bank-recon --remote --file=./migrations/0002_gap_bounds.sql` | Three `ALTER TABLE` statements succeed, and `SELECT after_event_id FROM gaps LIMIT 1` runs without error | Not verified |
 | D24 | Static assets really are served from the edge on a deployed Worker, and `/api` still reaches `fetch()` | After deploy, `curl -sI https://<host>/` and `curl -s https://<host>/api/accounts` | The first returns `content-type: text/html`, the second returns JSON; neither 404s | Not verified |
-| D25 | The dashboard works in a real browser against a deployed Worker, not only against `wrangler dev` | Open `https://<host>/` after Step 6, click into an account, toggle the authoritative read | The list renders, the timeline marks each adjacency, and the toggle changes the source note | Not verified |
-| D26 | README screenshots exist in `docs/images/` and are taken against seeded fixture data | Phase 6: run the seed, capture the account list, the gapped detail view, and the re-anchor control | Three images committed, every account label, merchant and balance in them invented | Not verified |
-| D27 | The simulator panel works in a real browser: buttons fire, scenarios compose valid events, and the dashboard updates behind them (the panel JS has only been syntax-checked; its HTTP calls were reproduced by hand with `curl`) | Open `/` under `wrangler dev` or a deploy, enter the token, and run all seven scenarios in order | Each scenario reports success, the timeline changes as the scenario describes, and no console error appears | Not verified |
+| D25 | The dashboard works in a real browser, not only under `curl` | Walked `docs/DEMO.md` step by step in a browser against `wrangler dev` | **Verified under local emulation, 2026-09-08.** Every view rendered, no console errors, no broken panels. Still open for a *deployed* Worker: D24 covers whether static assets serve from the edge, and nothing here has run against one | Verified (local emulation only) |
+| D26 | README screenshots exist in `docs/images/`, taken against seeded fixture data | Capture per `docs/images/README.md`; then check every image link resolves in GitHub's rendered view | **Two of three captured and committed, 2026-09-08**: `gap-detail.png` and `reanchor.png`, both showing `DEMO-` accounts with invented merchants, balances and references, and both linked with captions from README section 2. **`accounts.png` (the account list with a flagged `gap confirmed` row) is still missing** and nothing links to it, so no image URL is broken. D13 separately covers the links rendering on GitHub | Partly verified — `accounts.png` outstanding |
+| D27 | The simulator panel works in a real browser: buttons fire, scenarios compose valid events, and the dashboard updates behind them | Ran all seven scenarios in order per `docs/DEMO.md` | **Verified under local emulation, 2026-09-08.** Duplicate showed one row and "(2 deliveries)" with the balance moving once; skip opened a `PENDING_GAP` of exactly -600.00; the late fill slotted into position and closed it; force-window promoted to `CONFIRMED_GAP`; accept left the gap recorded with its reason and the timeline row still broken; the poison event produced six `queue.failed` lines then `dlq.received` with the ledger untouched and the payload still archived. Not yet run against a deployed Worker | Verified (local emulation only) |
 | D28 | The Access bypass on `POST /webhook` works, so the simulator and the re-anchor control still function once Access is live | Step 7.3: POST a demo event to `/webhook` with the bearer token from a session with no Access cookie; then run the re-anchor flow in a logged-in browser | The webhook POST returns `202` (and `401` with no bearer token, proving the bearer check survives the bypass); the re-anchor returns `200` and the gap becomes `ACCEPTED_GAP` | Not verified |
 | D29 | **Resolved in code; the deployment still has to prove it.** `SIMULATOR_TOKEN` and `OPERATOR_TOKEN` are now separate secrets, and `SIMULATOR_SCOPE` fences `/webhook` and force-window to `DEMO-` account ids on the deployed default. What is unverified is that both secrets are actually set remotely and that the fence is actually on | After deploy: `curl https://<host>/health`; then POST a real, non-DEMO `account_id` to `/webhook` carrying a valid `SIMULATOR_TOKEN` | Health reports `simulator_token: configured`, `operator_token: configured`, `simulator_scope: demo-accounts-only`; and the real-account POST returns `422` naming `account_id`, not `202` | Not verified |
 | D30 | **Workers Logs retain real transaction references and masked account numbers.** `observability` is enabled, and `email.queued`, `audit.written`, `ledger.applied` and `dlq.received` all log `account_id` and `event_id`, where `event_id` is `{bank}:{the bank's own reference}`. Balances and raw bodies are deliberately never logged | Review the log lines in `src/consumer.ts` and `src/ingress/email.ts` against what Workers Logs retains, and decide whether the reference belongs there | Either the fields are reduced, or the retention is accepted knowingly. It is the owner's own account, but `wrangler tail` output is also shoulder-surfable | Not verified |
