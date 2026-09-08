@@ -11,7 +11,7 @@ import { handleDeadLetterBatch, handleQueueBatch } from "./consumer";
 import { handleEmail } from "./ingress/email";
 import { enqueueEvent } from "./ingress/enqueue";
 import { SCHEMA_VERSION, type QueuedTxnMessage } from "./types";
-import { validateTxnEvent } from "./validate";
+import { isDemoAccount, validateTxnEvent } from "./validate";
 
 export { AccountLedger } from "./account-ledger";
 
@@ -59,7 +59,11 @@ async function health(env: Env): Promise<Response> {
     if (typeof env.TXN_QUEUE?.send !== "function") throw new Error("TXN_QUEUE not bound");
   });
 
+  // Both secrets are reported. A deployment with one set and the other missing
+  // half works, and finds out at the moment someone tries to accept a gap.
   checks["simulator_token"] = env.SIMULATOR_TOKEN ? "configured" : "unset";
+  checks["operator_token"] = env.OPERATOR_TOKEN ? "configured" : "unset";
+  checks["simulator_scope"] = env.SIMULATOR_SCOPE || "demo-accounts-only";
 
   return json(
     {
@@ -80,7 +84,7 @@ async function health(env: Env): Promise<Response> {
  * normalized.
  */
 async function webhook(request: Request, env: Env): Promise<Response> {
-  const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
+  const auth = await checkBearer(request, env.SIMULATOR_TOKEN, "SIMULATOR_TOKEN");
   if (!auth.ok) return json({ error: auth.reason }, auth.status);
 
   let body: unknown;
@@ -90,7 +94,11 @@ async function webhook(request: Request, env: Env): Promise<Response> {
     return json({ error: "body must be valid JSON" }, 400);
   }
 
-  const validated = await validateTxnEvent(body);
+  const validated = await validateTxnEvent(body, {
+    // Fenced on the deployed default: the simulator may only write to DEMO-
+    // accounts, so a leaked SIMULATOR_TOKEN cannot reach a real balance chain.
+    scope: env.SIMULATOR_SCOPE === "any-account" ? "any-account" : "demo-accounts-only",
+  });
   if (!validated.ok) {
     // 422, not 400: the JSON parsed, the content is wrong. Every field error is
     // returned at once so a hand-edited event can be fixed in one pass.
@@ -173,10 +181,23 @@ export default {
       path[1] === "accounts" &&
       path[3] === "force-window"
     ) {
-      const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
+      const auth = await checkBearer(request, env.SIMULATOR_TOKEN, "SIMULATOR_TOKEN");
       if (!auth.ok) return json({ error: auth.reason }, auth.status);
 
-      const result = await forceWindow(env, segment(2));
+      // Fenced alongside /webhook: it shares the simulator secret, and forcing
+      // the window on a real account would promote its pending gaps early.
+      const accountId = segment(2);
+      if (env.SIMULATOR_SCOPE !== "any-account" && !isDemoAccount(accountId)) {
+        return json(
+          {
+            error: "force-window is restricted to DEMO- accounts on this deployment",
+            account_id: accountId,
+          },
+          403,
+        );
+      }
+
+      const result = await forceWindow(env, accountId);
       return json(result.body, result.status);
     }
 
@@ -189,9 +210,10 @@ export default {
       path[3] === "gaps" &&
       path[5] === "accept"
     ) {
-      // Bearer-authenticated like /webhook: this one writes, and it writes the
-      // fact that a human accepted a discrepancy.
-      const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
+      // A different secret from the simulator's. This route records a human
+      // accepting a real discrepancy, permanently; injecting a demo event does
+      // not. One leak should not be both.
+      const auth = await checkBearer(request, env.OPERATOR_TOKEN, "OPERATOR_TOKEN");
       if (!auth.ok) return json({ error: auth.reason }, auth.status);
 
       let body: { reason?: unknown } = {};

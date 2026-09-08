@@ -1,8 +1,14 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+import { checkBearer } from "../src/auth";
 import { handleQueueBatch } from "../src/consumer";
 import type { TxnEvent } from "../src/types";
-import { AUTH_HEADER, makeQueueBatch, makeQueuedMessage } from "./helpers";
+import {
+  AUTH_HEADER,
+  OPERATOR_HEADER,
+  makeQueueBatch,
+  makeQueuedMessage,
+} from "./helpers";
 
 /**
  * The dashboard read surface, driven through the real consumer so the rows it
@@ -289,7 +295,7 @@ describe("POST /api/accounts/:id/gaps/:gapId/accept", () => {
       `https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}/gaps/x/accept`,
       {
         method: "POST",
-        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        headers: { ...OPERATOR_HEADER, "content-type": "application/json" },
         body: JSON.stringify({ reason: "   " }),
       },
     );
@@ -304,7 +310,7 @@ describe("POST /api/accounts/:id/gaps/:gapId/accept", () => {
       `https://example.com/api/accounts/${encodeURIComponent(REANCHOR)}/gaps/${gapId}/accept`,
       {
         method: "POST",
-        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        headers: { ...OPERATOR_HEADER, "content-type": "application/json" },
         body: JSON.stringify({ reason: "statement checked by hand" }),
       },
     );
@@ -351,12 +357,98 @@ describe("POST /api/accounts/:id/gaps/:gapId/accept", () => {
       `https://example.com/api/accounts/${encodeURIComponent(pendingAccount)}/gaps/${detail.gaps[0].gap_id}/accept`,
       {
         method: "POST",
-        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        headers: { ...OPERATOR_HEADER, "content-type": "application/json" },
         body: JSON.stringify({ reason: "too soon" }),
       },
     );
 
     // 409, not 404: the gap exists, just not in a state that can be accepted.
     expect(response.status).toBe(409);
+  });
+});
+
+describe("the two secrets are not interchangeable", () => {
+  // The point of splitting them: one leak must not be both "inject fabricated
+  // transactions" and "accept away a real discrepancy".
+
+  it("refuses the simulator token on the gap accept route", async () => {
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(ACCOUNT)}/gaps/x/accept`,
+      {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "wrong secret for this route" }),
+      },
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("refuses the operator token on /webhook", async () => {
+    const response = await SELF.fetch("https://example.com/webhook", {
+      method: "POST",
+      headers: { ...OPERATOR_HEADER, "content-type": "application/json" },
+      body: JSON.stringify({ account_id: "NIMB:DEMO-X", bank: "NIMB" }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("refuses the operator token on force-window", async () => {
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(ACCOUNT)}/force-window`,
+      { method: "POST", headers: OPERATOR_HEADER },
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("names the missing secret when one is unconfigured", async () => {
+    // With two secrets, "not configured" on its own sends you looking at the
+    // wrong one.
+    const result = await checkBearer(
+      new Request("https://example.com/", {
+        headers: { authorization: "Bearer anything" },
+      }),
+      undefined,
+      "OPERATOR_TOKEN",
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(503);
+    expect(result.reason).toContain("OPERATOR_TOKEN");
+  });
+});
+
+describe("POST /api/accounts/:id/force-window", () => {
+  it("404s an account the ledger has never seen", async () => {
+    // A Durable Object exists as soon as it is named, so a typo reaches a real
+    // but empty ledger. Projecting that wrote a null bank and failed the D1
+    // schema, which came back as a 500.
+    const response = await SELF.fetch(
+      "https://example.com/api/accounts/NIMB%3Anever-seen/force-window",
+      { method: "POST", headers: AUTH_HEADER },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("promotes a pending gap on an account that exists", async () => {
+    const account = "NIMB:099XX7744";
+    await ingest(
+      event("w1", account, "2026-03-12T09:00:00Z", 100000, 900000),
+      event("w3", account, "2026-03-12T11:00:00Z", 2500, 892500),
+    );
+
+    const response = await SELF.fetch(
+      `https://example.com/api/accounts/${encodeURIComponent(account)}/force-window`,
+      { method: "POST", headers: AUTH_HEADER },
+    );
+    const body = await response.json<{ reconciliation_status: string; projected: boolean }>();
+
+    expect(response.status).toBe(200);
+    expect(body.reconciliation_status).toBe("GAP_CONFIRMED");
+    expect(body.projected).toBe(true);
   });
 });

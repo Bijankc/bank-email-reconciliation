@@ -1,3 +1,23 @@
 # Copy to .dev.vars for local development. Never commit .dev.vars.
-# In production this is set with: wrangler secret put SIMULATOR_TOKEN
+#
+# Two secrets, not one. They guard different things, and a leak of either
+# should not imply the other:
+#
+#   SIMULATOR_TOKEN  POST /webhook and POST /api/accounts/:id/force-window.
+#                    Injects events and fast-forwards the resolution window.
+#   OPERATOR_TOKEN   POST /api/accounts/:id/gaps/:gapId/accept.
+#                    Accepts a real discrepancy, permanently, on the record.
+#
+# Both fail closed: an unset secret rejects every request to its routes rather
+# than waving them through.
+#
+# In production each is set separately:
+#   wrangler secret put SIMULATOR_TOKEN
+#   wrangler secret put OPERATOR_TOKEN
 SIMULATOR_TOKEN = "choose-a-long-random-value"
+OPERATOR_TOKEN = "choose-a-different-long-random-value"
+
+# Local only. The deployed value in wrangler.jsonc is "demo-accounts-only",
+# which restricts /webhook to DEMO- account ids. Local development and the test
+# suite post to ordinary ids, so they opt out here.
+SIMULATOR_SCOPE = "any-account"
