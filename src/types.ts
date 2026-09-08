@@ -15,6 +15,17 @@ export type EventIdMethod = "reference" | "hash";
 
 export const SCHEMA_VERSION = 1 as const;
 
+/**
+ * The poison hook (spec 9). An event whose reference is exactly this value is
+ * made to fail in the consumer, every time, so the retry-to-dead-letter path
+ * can be demonstrated on demand.
+ *
+ * It is a reference rather than a source_channel because a source_channel is
+ * part of the audit record and should describe where an event really came from.
+ * A reference is data the bank supplies, and no bank issues this one.
+ */
+export const POISON_REFERENCE = "POISON-DLQ-DEMO";
+
 export interface TxnEvent {
   /** Idempotency key. `{bank}:{reference}`, or a hash of stable fields. */
   event_id: string;

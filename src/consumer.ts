@@ -1,4 +1,5 @@
 import { writeAudit } from "./audit";
+import { POISON_REFERENCE } from "./types";
 import { projectAccount, projectTransaction } from "./projection";
 import type { QueuedTxnMessage } from "./types";
 
@@ -67,6 +68,19 @@ export async function handleQueueBatch(
         }),
       );
 
+      // The poison hook (spec 9). An event carrying this reference throws here,
+      // after the audit write and before the ledger, so the demo can show a
+      // repeatedly-failing message exhausting its retries and landing in the
+      // dead-letter queue without ever corrupting an account. It sits on this
+      // side of the ledger call deliberately: a poison event that reached the
+      // DO would prove nothing about the retry path, and one that never reached
+      // R2 would not be auditable.
+      if (event.reference === POISON_REFERENCE) {
+        throw new Error(
+          `poison event: reference ${POISON_REFERENCE} fails on purpose`,
+        );
+      }
+
       // The ledger is reached only after the artifact is durable, so a failure
       // between the two retries against evidence that is already stored.
       const stub = env.ACCOUNT_LEDGER.get(
@@ -134,5 +148,40 @@ export async function handleQueueBatch(
       );
       message.retry();
     }
+  }
+}
+
+/**
+ * The dead-letter queue consumer.
+ *
+ * A message arrives here only after failing every retry on the main queue, so
+ * there is nothing to retry: the same failure would repeat. It is recorded
+ * loudly and acked, which is the difference between a dead-letter queue and a
+ * queue nobody reads.
+ *
+ * Recording is the whole job. The event is already in R2 - the audit write
+ * happens before anything that can fail this way - so what is lost is the
+ * reconciliation, not the evidence, and the log line says which account needs
+ * looking at.
+ */
+export async function handleDeadLetterBatch(
+  batch: MessageBatch<QueuedTxnMessage>,
+  _env: Env,
+): Promise<void> {
+  for (const message of batch.messages) {
+    const event = message.body?.event;
+    console.error(
+      JSON.stringify({
+        at: "dlq.received",
+        queue: batch.queue,
+        message_id: message.id,
+        attempts: message.attempts,
+        event_id: event?.event_id ?? null,
+        account_id: event?.account_id ?? null,
+        source: event?.source_channel ?? null,
+        note: "exhausted retries on txn-events; not applied to any ledger",
+      }),
+    );
+    message.ack();
   }
 }

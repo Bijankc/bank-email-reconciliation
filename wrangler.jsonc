@@ -45,6 +45,16 @@
         "max_retries": 5,
         // Poison events stop blocking the pipeline and land here instead.
         "dead_letter_queue": "txn-events-dlq"
+      },
+      {
+        // The dead-letter queue has its own consumer so a poisoned event is
+        // recorded rather than silently accumulating in a queue nobody reads.
+        // It only logs: whatever failed five times on the main queue will fail
+        // here too, so retrying is pointless and this consumer always acks.
+        "queue": "txn-events-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 0
       }
     ]
   },
