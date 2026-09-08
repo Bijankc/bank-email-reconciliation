@@ -1,3 +1,9 @@
+import {
+  getAccount,
+  getAuthoritativeAccount,
+  listAccounts,
+  listAudit,
+} from "./api";
 import { checkBearer } from "./auth";
 import { handleQueueBatch } from "./consumer";
 import { handleEmail } from "./ingress/email";
@@ -119,6 +125,11 @@ async function webhook(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    // Split once and match on the parts. Every id in this system is namespaced
+    // with a colon, which is legal in a path segment but routinely encoded by
+    // clients, so each segment is decoded rather than compared raw.
+    const path = url.pathname.split("/").filter((part) => part !== "");
+    const segment = (index: number) => decodeURIComponent(path[index] ?? "");
 
     if (request.method === "GET" && url.pathname === "/health") {
       return health(env);
@@ -126,6 +137,32 @@ export default {
     if (request.method === "POST" && url.pathname === "/webhook") {
       return webhook(request, env);
     }
+
+    if (request.method === "GET" && path[0] === "api" && path[1] === "accounts") {
+      if (path.length === 2) {
+        return json(await listAccounts(env));
+      }
+
+      const accountId = segment(2);
+
+      if (path.length === 3) {
+        // The teaching toggle: the same account, read from the eventually
+        // consistent projection or from the authoritative ledger.
+        const body =
+          url.searchParams.get("authoritative") === "true"
+            ? await getAuthoritativeAccount(env, accountId)
+            : await getAccount(env, accountId);
+
+        return body === null
+          ? json({ error: "no such account", account_id: accountId }, 404)
+          : json(body);
+      }
+
+      if (path.length === 4 && path[3] === "audit") {
+        return json(await listAudit(env, accountId));
+      }
+    }
+
     return json({ error: "not found", path: url.pathname }, 404);
   },
 
