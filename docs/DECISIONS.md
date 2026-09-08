@@ -258,3 +258,163 @@ merchant is display only. The reported balance is the entire product — it is t
 independent assertion the recorded movements are checked against, and an event
 without one contributes nothing to a chain while creating a hole in it. Better to
 reject the message loudly than to insert a transaction that can never reconcile.
+
+## Phase 2 — ingress, queue and audit
+
+### 2.1 Both ingress paths converge on one enqueue function, and neither touches storage
+
+**Decision.** `email()` and `POST /webhook` do their own kind of parsing and
+then call the same `enqueueEvent`. Neither writes to R2, D1 or the ledger.
+
+**Rejected.** Letting each handler build its own queue message, and writing the
+audit object at ingress where the raw bytes already are.
+
+**Reason.** Two handlers building their own messages is how the two paths drift:
+a field added for the simulator quietly never reaches the email path, and the
+divergence shows up three phases later as a reconciliation that works for one
+source and not the other. Keeping the construction in one place makes the two
+paths structurally identical downstream of ingress.
+
+Writing the audit object at ingress is the more tempting mistake. It looks like
+a saved round trip, but it puts a storage write on the path that Email Routing
+is waiting on: an R2 slowdown becomes a delivery stall, and there is nothing
+useful to do about a failure there because the message has already been
+accepted from the sender. On the consumer side the same failure is just a
+retry. Ingress stays fast and dumb (spec 9); durability is the queue's job.
+
+### 2.2 The simulator ingress is treated as an untrusted boundary, not a test hook
+
+**Decision.** `/webhook` validates every field of the incoming event, collects
+every failure rather than stopping at the first, and answers `422` with the
+list. `400` is reserved for a body that is not JSON at all.
+
+**Rejected.** Trusting the body because the endpoint is behind a bearer token,
+and validating only the fields the next phase happens to read.
+
+**Reason.** This is the only place a caller can hand the engine a transaction
+the parsers did not build, so every invariant the rest of the system assumes has
+to be asserted here or it is not an invariant. The parsers cannot emit a float
+amount; an HTTP client can, and `amount_paisa: 2200.5` accepted at the boundary
+becomes a ledger that fails to reconcile by half a paisa with no visible cause.
+An `account_id` whose prefix disagrees with `bank` is worse: it addresses a
+different Durable Object, so the same real account ends up with two ledgers each
+reconciling against half its transactions.
+
+Authentication answers who is calling, not whether what they sent is coherent.
+
+Collecting all errors rather than the first is for the Phase 6 simulator panel,
+which posts hand-edited JSON. One round trip per mistake is a poor way to find
+three of them.
+
+### 2.3 Provenance is decided by the endpoint, never read from the body
+
+**Decision.** `source_channel` is overwritten with `"simulator"` on every event
+that arrives at `/webhook`, whatever the body claims. Likewise `event_id_method`
+is derived from the id rather than trusted.
+
+**Rejected.** Passing both through as sent.
+
+**Reason.** The audit trail exists to answer where a transaction came from. A
+simulator event able to label itself `"email"` makes that question unanswerable
+by exactly the payload that most needs auditing, and the field costs nothing to
+set correctly at the one point that actually knows the answer. The same argument
+applies to `event_id_method`: it is the flag the README uses to admit that a
+hash-derived id is the weaker key, so it has to reflect the id that was really
+used. It reads as `"reference"` only when the id genuinely is `{bank}:{reference}`.
+
+### 2.4 Write-once means skip an existing object, not overwrite it with the same bytes
+
+**Decision.** `writeAudit` checks for the key and returns early if it is there.
+Only a first write puts.
+
+**Rejected.** The spec's phrasing in 7.3 - every retry rewrites the same key
+with the same bytes, so write-once and at-least-once coexist.
+
+**Reason.** That reasoning holds for a queue retry, which really does resend
+identical bytes. It does not hold for the case this system is built around. A
+re-forwarded email produces the same derived `event_id` and a different byte
+stream: a new `Message-ID`, extra `Received` headers, sometimes a different
+transfer encoding. Overwriting would let the second copy replace the first in a
+store whose entire value is holding the thing that actually arrived. The
+skip-if-present version keeps the original and is equally idempotent.
+
+The cost is a check-then-write race if two deliveries of one event are in flight
+at once. The worst outcome there is a duplicate write of bytes for a single
+`event_id`, which changes nothing. Losing the original artifact does.
+
+### 2.5 Audit keys keep the colon and escape only what would change the path
+
+**Decision.** `raw/{account_id}/{event_id}.eml` with `%` and `/` percent-escaped
+in each component and everything else left alone, so a key reads
+`raw/NIMB:099XX4417/NIMB:88213047qLmT.eml`.
+
+**Rejected.** `encodeURIComponent` on each component, and no escaping at all.
+
+**Reason.** A slash inside a bank reference would silently push the object a
+directory deeper, out from under the account prefix that Phase 5 lists by;
+escaping it removes the hazard. Percent is escaped first so the mapping stays
+reversible. Beyond those two characters, encoding buys nothing and costs the
+thing that makes an audit bucket useful under pressure, which is being able to
+find one transaction by reading the key.
+
+### 2.6 The failure taxonomy: what retries, what acks, and what throws
+
+**Decision.** Three distinct behaviours, chosen per failure rather than per
+layer.
+
+- A body that does not parse as a bank email is logged and dropped at ingress.
+  It never reaches the queue.
+- A queue message with no `event_id` or `account_id` is acked.
+- An R2 failure in the consumer calls `retry()`.
+- A queue send failure at ingress is allowed to throw out of the handler.
+
+**Rejected.** Retrying everything and letting `max_retries` sort it out.
+
+**Reason.** Retry is only useful when the next attempt could differ. A newsletter
+that slipped through the forwarding rule parses identically five times and then
+occupies the dead-letter queue, which is meant to hold real poison. Email Routing
+has already accepted the message by the time `email()` runs, so there is nobody
+to bounce it to either; recording it is the whole available response.
+
+A storage failure is the opposite: the input is fine and the next attempt very
+likely succeeds, so it must not be acked. Acking there loses a real debit
+silently, which is the one outcome this project exists to prevent.
+
+The enqueue throw is the interesting one. There is no retry available at ingress
+and no caller to tell, so failing the invocation is the only signal left - it
+marks the delivery as failed rather than reporting success over a transaction
+that went nowhere.
+
+### 2.7 The raw payload travels inside the queue message, with a truncation guard
+
+**Decision.** `QueuedTxnMessage` carries the raw bytes. A payload over 96 KB is
+cut to fit, flagged with `raw_truncated`, logged as a warning, and marked in the
+R2 object metadata.
+
+**Rejected.** Silently sending oversized messages, and dropping the transaction
+when the payload is too large.
+
+**Reason.** Queue messages are capped at 128 KB and the cap here sits under it,
+because hitting the real limit surfaces as an opaque send failure at ingress
+rather than as anything readable. Bank alerts are a few kilobytes, so the guard
+should never fire; the point is that if it ever does, it says so.
+
+Dropping the transaction would be the wrong trade. Everything the ledger needs
+is in `event`, not in `raw`, so a truncated artifact still reconciles correctly
+and only the evidence is incomplete. What must not happen is an audit store that
+holds partial evidence while claiming to be verbatim, which is why the flag
+follows the object rather than living only in a log line.
+
+### 2.8 A simulator event archives the validated event, not the request body
+
+**Decision.** The `.json` audit artifact is the normalized `TxnEvent`, serialized
+after validation.
+
+**Rejected.** Archiving the raw request body as received.
+
+**Reason.** For an email the raw payload is the source of truth and the parse is
+the derived thing, so the bytes are what deserve keeping. For a simulator event
+the relationship is inverted: the body is a hand-written approximation of an
+event, and the validated result is what actually entered the system. Archiving
+the body would store unvalidated extras and omit every field that validation
+filled in, leaving the audit trail describing something the ledger never saw.

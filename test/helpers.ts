@@ -1,3 +1,5 @@
+import type { QueuedTxnMessage, TxnEvent } from "../src/types";
+
 /**
  * Test helpers. Everything produced here is invented: no value in this file or
  * in samples/redacted/ corresponds to a real account, merchant, or transaction.
@@ -47,3 +49,77 @@ export function makeEmailMessage(options: {
 export const AUTH_HEADER = {
   authorization: "Bearer test-token-not-a-real-secret",
 };
+
+/** One queue message plus the ack/retry calls the consumer made on it. */
+export interface FakeQueueMessage {
+  message: Message<QueuedTxnMessage>;
+  acked: () => number;
+  retried: () => number;
+}
+
+/**
+ * Build a MessageBatch the consumer can be run against directly. The queue
+ * itself is proven end to end under `wrangler dev`; this exists to assert the
+ * ack-versus-retry decision, which a real queue only reveals by redelivering.
+ */
+export function makeQueueBatch(
+  bodies: QueuedTxnMessage[],
+  options: { attempts?: number } = {},
+): { batch: MessageBatch<QueuedTxnMessage>; calls: FakeQueueMessage[] } {
+  const calls: FakeQueueMessage[] = [];
+
+  const messages = bodies.map((body, index) => {
+    let acks = 0;
+    let retries = 0;
+    const message = {
+      id: `msg-${index}`,
+      timestamp: new Date("2026-03-12T00:00:00Z"),
+      attempts: options.attempts ?? 1,
+      body,
+      ack: () => {
+        acks += 1;
+      },
+      retry: () => {
+        retries += 1;
+      },
+    } as unknown as Message<QueuedTxnMessage>;
+
+    calls.push({ message, acked: () => acks, retried: () => retries });
+    return message;
+  });
+
+  return {
+    batch: { queue: "txn-events", messages, ackAll: () => {}, retryAll: () => {} } as unknown as MessageBatch<QueuedTxnMessage>,
+    calls,
+  };
+}
+
+/** A complete, valid queue message. Every value in it is invented. */
+export function makeQueuedMessage(
+  overrides: Partial<QueuedTxnMessage> = {},
+  eventOverrides: Partial<TxnEvent> = {},
+): QueuedTxnMessage {
+  return {
+    event: {
+      event_id: "NIMB:88213047qLmT",
+      event_id_method: "reference",
+      account_id: "NIMB:099XX4417",
+      account_label: "099XX4417",
+      bank: "NIMB",
+      direction: "DEBIT",
+      amount_paisa: 145000,
+      reported_balance_paisa: 731055,
+      occurred_at: "2026-03-12T09:14:22Z",
+      merchant: "coffee",
+      reference: "88213047qLmT",
+      source_channel: "email",
+      schema_version: 1,
+      ...eventOverrides,
+    },
+    raw: ["From: donot_reply@nimb.com.np", "", "Invented fixture body."].join("\r\n"),
+    raw_format: "eml",
+    raw_truncated: false,
+    received_at: "2026-03-12T09:14:30Z",
+    ...overrides,
+  };
+}

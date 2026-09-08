@@ -1,7 +1,9 @@
 import { checkBearer } from "./auth";
 import { handleQueueBatch } from "./consumer";
 import { handleEmail } from "./ingress/email";
+import { enqueueEvent } from "./ingress/enqueue";
 import { SCHEMA_VERSION, type QueuedTxnMessage } from "./types";
+import { validateTxnEvent } from "./validate";
 
 export { AccountLedger } from "./account-ledger";
 
@@ -52,9 +54,11 @@ async function health(env: Env): Promise<Response> {
 }
 
 /**
- * Simulator ingress. Phase 0 authenticates and enqueues so the async path is
- * provable locally without waiting on a real bank transaction; full field
- * validation arrives with the parsers in Phase 2.
+ * Simulator ingress (spec 5.5). A real external event source, injected into
+ * over HTTP behind a bearer secret - not an internal test hook - so it goes
+ * through the same validation, the same queue and the same ledger as a bank
+ * email. The only thing it skips is the parsers, because it arrives already
+ * normalized.
  */
 async function webhook(request: Request, env: Env): Promise<Response> {
   const auth = await checkBearer(request, env.SIMULATOR_TOKEN);
@@ -67,21 +71,38 @@ async function webhook(request: Request, env: Env): Promise<Response> {
     return json({ error: "body must be valid JSON" }, 400);
   }
 
-  const event = body as QueuedTxnMessage["event"];
-  if (!event || typeof event !== "object" || !event.account_id || !event.event_id) {
-    return json({ error: "event must carry account_id and event_id" }, 422);
+  const validated = await validateTxnEvent(body);
+  if (!validated.ok) {
+    // 422, not 400: the JSON parsed, the content is wrong. Every field error is
+    // returned at once so a hand-edited event can be fixed in one pass.
+    return json({ error: "event failed validation", errors: validated.errors }, 422);
   }
 
-  const message: QueuedTxnMessage = {
-    event: { ...event, source_channel: "simulator" },
-    raw: JSON.stringify(body),
-    raw_format: "json",
-    received_at: new Date().toISOString(),
-  };
-  await env.TXN_QUEUE.send(message);
+  const event = validated.event;
+  // The archived artifact for a simulator event is the validated event itself,
+  // serialized. There is no upstream payload to keep, and storing the raw body
+  // instead would archive whatever unvalidated extras the caller sent.
+  const enqueued = await enqueueEvent(env, event, JSON.stringify(event, null, 2), "json");
+
+  console.log(
+    JSON.stringify({
+      at: "webhook.queued",
+      event_id: event.event_id,
+      account_id: event.account_id,
+      event_id_method: event.event_id_method,
+    }),
+  );
 
   // 202: the event is durably queued, not yet reconciled. Reconciliation is async.
-  return json({ accepted: true, event_id: event.event_id }, 202);
+  return json(
+    {
+      accepted: true,
+      event_id: enqueued.event_id,
+      account_id: event.account_id,
+      event_id_method: event.event_id_method,
+    },
+    202,
+  );
 }
 
 export default {

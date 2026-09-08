@@ -99,7 +99,51 @@ describe("POST /webhook", () => {
     await expect(response.json()).resolves.toEqual({
       accepted: true,
       event_id: "NABIL:71104582WxYz",
+      account_id: "NABIL:220XXXXXX881904",
+      event_id_method: "reference",
     });
+  });
+
+  it("derives the event_id when the caller omits it", async () => {
+    const { event_id: _omitted, reference: _also, ...withoutId } = sampleEvent;
+
+    const response = await SELF.fetch("https://example.com/webhook", {
+      method: "POST",
+      headers: AUTH_HEADER,
+      body: JSON.stringify(withoutId),
+    });
+    const body = await response.json<{ event_id: string; event_id_method: string }>();
+
+    expect(response.status).toBe(202);
+    expect(body.event_id).toMatch(/^NABIL:[0-9a-f]{64}$/);
+    expect(body.event_id_method).toBe("hash");
+  });
+
+  it("returns every field error at once for a bad event", async () => {
+    const response = await SELF.fetch("https://example.com/webhook", {
+      method: "POST",
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ ...sampleEvent, amount_paisa: 1250.5, direction: "SIDEWAYS" }),
+    });
+    const body = await response.json<{ errors: { field: string }[] }>();
+
+    // 422, not 400: the JSON parsed, the content is wrong.
+    expect(response.status).toBe(422);
+    expect(body.errors.map((error) => error.field)).toEqual([
+      "direction",
+      "amount_paisa",
+    ]);
+  });
+
+  it("refuses rupees where paisa are expected", async () => {
+    // The unit pin, enforced at the boundary rather than assumed downstream.
+    const response = await SELF.fetch("https://example.com/webhook", {
+      method: "POST",
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ ...sampleEvent, amount_paisa: 1250.55 }),
+    });
+
+    expect(response.status).toBe(422);
   });
 });
 
