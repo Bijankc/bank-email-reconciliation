@@ -1,0 +1,30 @@
+From: txn-alert@nabilbank.com
+To: alerts@example.invalid
+Subject: Nabil Bank Transaction Alert
+Message-ID: <redacted-nabil-0001@example.invalid>
+Date: Thu, 12 Mar 2026 10:05:40 +0545
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html>
+  <body>
+    <p>Dear Customer,</p>
+    <p>A transaction has occurred on your account 220XXXXXX881904.</p>
+    <table border="1">
+      <tr>
+        <th>Transaction Date</th>
+        <th>Transaction Type</th>
+        <th>Transaction Amount</th>
+        <th>Available Balance</th>
+        <th>Remarks</th>
+      </tr>
+      <tr>
+        <td>2026-03-12 10:05</td>
+        <td>Debit</td>
+        <td>1,250.00</td>
+        <td>6,060.55</td>
+        <td>MPAY FPQR,71104582WxYz,ORCHID STATIONERS PVT. LTD. KTM</td>
+      </tr>
+    </table>
+  </body>
+</html>

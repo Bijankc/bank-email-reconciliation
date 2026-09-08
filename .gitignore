@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+dist/
+samples/real/
+
+# the build brief is not committed: it contains non-technical strategy language
+bank-email-reconciliation-engine-spec.md
+
+.DS_Store
+*.log
+coverage/
