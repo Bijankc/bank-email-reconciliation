@@ -19,8 +19,13 @@ export default defineConfig({
       miniflare: {
         bindings: {
           TEST_MIGRATIONS: migrations,
-          // Never the real secret. /webhook auth is exercised against this.
+          // Never real secrets. The two write paths are exercised against these,
+          // and they differ so a test cannot pass by using the wrong one.
           SIMULATOR_TOKEN: "test-token-not-a-real-secret",
+          OPERATOR_TOKEN: "test-operator-token-not-a-real-secret",
+          // The suite posts to ordinary account ids, so it opts out of the
+          // DEMO- fence exactly as local development does.
+          SIMULATOR_SCOPE: "any-account",
         },
       },
     }),

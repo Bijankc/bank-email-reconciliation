@@ -46,8 +46,15 @@ export function makeEmailMessage(options: {
   } as unknown as ForwardableEmailMessage;
 }
 
+/** The simulator secret: /webhook and force-window. */
 export const AUTH_HEADER = {
   authorization: "Bearer test-token-not-a-real-secret",
+};
+
+/** The operator secret: accepting a gap. Deliberately a different value, so a
+ *  route that accepts the wrong one fails the test rather than passing it. */
+export const OPERATOR_HEADER = {
+  authorization: "Bearer test-operator-token-not-a-real-secret",
 };
 
 /** One queue message plus the ack/retry calls the consumer made on it. */

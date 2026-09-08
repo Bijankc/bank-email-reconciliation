@@ -5,8 +5,10 @@ broken. Tracked as **D26** in `../DEFERRED.md`.
 
 ## What to capture
 
-Run `npm run dev`, open <http://127.0.0.1:8787>, enter the token from
-`.dev.vars` in the simulator panel, and click through the scenarios in order.
+Follow `../DEMO.md`, which starts with `rm -rf .wrangler` and walks the
+scenarios in the order that produces each view. Do not skip the clean-state
+step: emulation state persists between runs and can hold rows from an earlier
+version of the parsers, which shows up as gaps the scenarios did not create.
 Every value on screen is then invented — the simulator generates its own demo
 account (`NIMB:DEMO-XXXXXX`) with fabricated merchants and balances, so nothing
 needs blurring or cropping and no real data is ever on screen.

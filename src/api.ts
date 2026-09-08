@@ -242,6 +242,18 @@ export async function forceWindow(
 ): Promise<{ status: number; body: unknown }> {
   const stub = env.ACCOUNT_LEDGER.get(env.ACCOUNT_LEDGER.idFromName(accountId));
   const state = await stub.forceWindow();
+
+  // A Durable Object exists as soon as it is named, so a typo in the account id
+  // reaches a real but empty ledger. Projecting that state writes an accounts
+  // row with a null bank and fails the schema, which surfaced as a 500 rather
+  // than as the 404 it actually is. Same rule as the authoritative read.
+  if (state.event_count === 0) {
+    return {
+      status: 404,
+      body: { error: "no such account", account_id: accountId },
+    };
+  }
+
   const projected = await projectAccount(env, state);
 
   return {

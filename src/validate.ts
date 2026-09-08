@@ -42,6 +42,27 @@ export type ValidationResult =
   | { ok: true; event: TxnEvent }
   | { ok: false; errors: FieldError[] };
 
+/**
+ * How much of the account space the simulator may write to.
+ *
+ * `demo-accounts-only` is the deployed setting. `any-account` is what local
+ * development and the test suite use, because they post to ordinary ids.
+ */
+export type SimulatorScope = "any-account" | "demo-accounts-only";
+
+/**
+ * The label prefix the simulator gives the accounts it creates. Also written
+ * literally in `public/simulator.js`, which cannot import from here - a
+ * mismatch shows up immediately as a 403 on the first scenario.
+ */
+export const DEMO_ACCOUNT_PREFIX = "DEMO-";
+
+/** Is this an account the simulator is allowed to own? `NIMB:DEMO-A1B2C3`. */
+export function isDemoAccount(accountId: string): boolean {
+  const colon = accountId.indexOf(":");
+  return colon > 0 && accountId.slice(colon + 1).startsWith(DEMO_ACCOUNT_PREFIX);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -120,7 +141,9 @@ function paisa(
  */
 export async function validateTxnEvent(
   body: unknown,
+  options: { scope?: SimulatorScope } = {},
 ): Promise<ValidationResult> {
+  const scope = options.scope ?? "demo-accounts-only";
   const errors: FieldError[] = [];
 
   if (!isRecord(body)) {
@@ -196,6 +219,15 @@ export async function validateTxnEvent(
     errors.push({
       field: "account_id",
       message: "carries no account number after the bank prefix",
+    });
+  } else if (scope === "demo-accounts-only" && !isDemoAccount(accountId)) {
+    // The fence. Ingress from a bank email does not pass through here, so this
+    // restricts the simulator without restricting real transactions: a leaked
+    // SIMULATOR_TOKEN can create noise in the demo namespace but cannot insert
+    // a fabricated movement into a real account's balance chain.
+    errors.push({
+      field: "account_id",
+      message: `this deployment only accepts simulator events for ${DEMO_ACCOUNT_PREFIX} accounts`,
     });
   }
 

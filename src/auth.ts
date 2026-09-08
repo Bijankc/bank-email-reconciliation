@@ -1,9 +1,14 @@
 /**
- * Bearer-token check for the write endpoints (/webhook, gap accept).
+ * Bearer-token check for the write endpoints.
+ *
+ * There are two secrets, not one, because the routes guard different things:
+ * SIMULATOR_TOKEN admits an event to the pipeline, OPERATOR_TOKEN records a
+ * human accepting a real discrepancy. This function is given whichever one the
+ * route requires, and knows nothing about which is which.
  *
  * Two properties matter here and both are deliberate:
- *  - Fail closed. If SIMULATOR_TOKEN is unset, every request is rejected. An
- *    unset secret must never mean "auth disabled" on a public deployment.
+ *  - Fail closed. If the expected secret is unset, every request is rejected.
+ *    An unset secret must never mean "auth disabled" on a public deployment.
  *  - Constant time. Both sides are hashed to a fixed 32 bytes before comparison,
  *    so the comparison leaks neither the token's content nor its length.
  */
@@ -21,12 +26,15 @@ export type AuthResult =
 export async function checkBearer(
   request: Request,
   expected: string | undefined,
+  secretName = "the required secret",
 ): Promise<AuthResult> {
   if (!expected) {
+    // Names the missing secret, because with two of them "not configured" on
+    // its own sends you looking at the wrong one.
     return {
       ok: false,
       status: 503,
-      reason: "SIMULATOR_TOKEN is not configured; refusing to accept writes",
+      reason: `${secretName} is not configured; refusing to accept writes`,
     };
   }
 

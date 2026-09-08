@@ -262,7 +262,9 @@ npm run db:local                   # applies both migrations to the local D1
 npm run dev                        # wrangler dev, all bindings emulated locally
 ```
 
-Open <http://127.0.0.1:8787>. The simulator panel drives everything; enter the token from `.dev.vars` and click through the scenarios.
+Open <http://127.0.0.1:8787>. The simulator panel drives everything. It asks for `SIMULATOR_TOKEN`; accepting a gap asks for `OPERATOR_TOKEN`, which is a separate secret — both are in `.dev.vars`.
+
+Start from `rm -rf .wrangler` before a demo run: emulation state persists between runs and can hold rows from an earlier version of the parsers. [`docs/DEMO.md`](docs/DEMO.md) is the step-by-step walkthrough, including what each scenario should produce.
 
 ```bash
 npm test                           # 162 tests, vitest on @cloudflare/vitest-pool-workers
@@ -334,3 +336,4 @@ Be precise about what that buys. Access protects the read surface: the dashboard
 | `docs/DECISIONS.md` | Every non-obvious call, written when it was made |
 | `docs/DEFERRED.md` | Everything unverifiable without a Cloudflare account |
 | `docs/CLOUDFLARE_SETUP.md` | The deployment runbook |
+| `docs/DEMO.md` | The local walkthrough, and what each simulator scenario should show |

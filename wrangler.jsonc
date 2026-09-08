@@ -31,6 +31,21 @@
     "directory": "./public"
   },
 
+  // Deployed values. `.dev.vars` overrides these locally; see .dev.vars.example.
+  "vars": {
+    // How much of the account space POST /webhook is allowed to write to.
+    //
+    // "demo-accounts-only" is the deployed setting and the safe default: the
+    // simulator can only touch account ids whose label starts with DEMO-, so a
+    // leaked SIMULATOR_TOKEN cannot inject fabricated transactions into a real
+    // account's balance chain. Local development sets "any-account" in
+    // .dev.vars, because tests and the local demo post to ordinary ids.
+    //
+    // Anything other than the exact string "any-account" restricts, including
+    // an unset value. See docs/DECISIONS.md 7.2.
+    "SIMULATOR_SCOPE": "demo-accounts-only"
+  },
+
   // One Worker exports all three handlers:
   //   fetch() - dashboard API + the /webhook simulator ingress
   //   email() - real bank-email ingress via Email Routing

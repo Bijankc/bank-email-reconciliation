@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateTxnEvent } from "../src/validate";
+import { isDemoAccount, validateTxnEvent } from "../src/validate";
 
 /**
  * /webhook is the one place a caller can hand the engine a transaction the
@@ -21,16 +21,22 @@ const VALID = {
   schema_version: 1,
 };
 
+// Most of this file is about field validation rather than the deployment
+// fence, so it opts out of the DEMO- restriction the way local development
+// does. The fence gets its own describe block at the end, including a test
+// that the default is the restrictive one.
+const OPEN = { scope: "any-account" } as const;
+
 /** The field names of everything that went wrong, for compact assertions. */
 async function fieldsRejected(body: unknown): Promise<string[]> {
-  const result = await validateTxnEvent(body);
+  const result = await validateTxnEvent(body, OPEN);
   if (result.ok) return [];
   return result.errors.map((error) => error.field);
 }
 
 describe("validateTxnEvent", () => {
   it("accepts a well-formed simulator event unchanged", async () => {
-    const result = await validateTxnEvent(VALID);
+    const result = await validateTxnEvent(VALID, OPEN);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -53,7 +59,7 @@ describe("validateTxnEvent", () => {
 
   it("produces the same key set the email parsers produce", async () => {
     // Nothing downstream of ingress should be able to tell the two apart.
-    const result = await validateTxnEvent(VALID);
+    const result = await validateTxnEvent(VALID, OPEN);
     if (!result.ok) throw new Error("expected valid");
 
     expect(Object.keys(result.event).sort()).toEqual(
@@ -107,11 +113,11 @@ describe("validateTxnEvent", () => {
 
     it("accepts a zero or negative balance", async () => {
       // An overdrawn account is a real state and the events worth seeing most.
-      const zero = await validateTxnEvent({ ...VALID, reported_balance_paisa: 0 });
+      const zero = await validateTxnEvent({ ...VALID, reported_balance_paisa: 0 }, OPEN);
       const negative = await validateTxnEvent({
         ...VALID,
         reported_balance_paisa: -45000,
-      });
+      }, OPEN);
 
       expect(zero.ok).toBe(true);
       expect(negative.ok).toBe(true);
@@ -140,7 +146,7 @@ describe("validateTxnEvent", () => {
 
     it("derives event_id when the caller omits it", async () => {
       const { event_id: _omitted, ...withoutId } = VALID;
-      const result = await validateTxnEvent(withoutId);
+      const result = await validateTxnEvent(withoutId, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -150,7 +156,7 @@ describe("validateTxnEvent", () => {
 
     it("falls back to a hash id when there is no reference either", async () => {
       const { event_id: _omitted, ...withoutId } = VALID;
-      const result = await validateTxnEvent({ ...withoutId, reference: null });
+      const result = await validateTxnEvent({ ...withoutId, reference: null }, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -161,8 +167,8 @@ describe("validateTxnEvent", () => {
     it("posting the same event twice derives the same id", async () => {
       // The dedup story: the caller does not have to know the derivation rule.
       const { event_id: _omitted, ...withoutId } = VALID;
-      const first = await validateTxnEvent({ ...withoutId, reference: null });
-      const second = await validateTxnEvent({ ...withoutId, reference: null });
+      const first = await validateTxnEvent({ ...withoutId, reference: null }, OPEN);
+      const second = await validateTxnEvent({ ...withoutId, reference: null }, OPEN);
 
       if (!first.ok || !second.ok) throw new Error("expected valid");
       expect(first.event.event_id).toBe(second.event.event_id);
@@ -174,7 +180,7 @@ describe("validateTxnEvent", () => {
         ...VALID,
         event_id: "NABIL:something-else",
         event_id_method: "reference",
-      });
+      }, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -190,7 +196,7 @@ describe("validateTxnEvent", () => {
 
   describe("provenance and versioning", () => {
     it("forces source_channel to simulator whatever the body claims", async () => {
-      const result = await validateTxnEvent({ ...VALID, source_channel: "email" });
+      const result = await validateTxnEvent({ ...VALID, source_channel: "email" }, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -204,7 +210,7 @@ describe("validateTxnEvent", () => {
     });
 
     it("ignores additive unknown fields", async () => {
-      const result = await validateTxnEvent({ ...VALID, channel_hint: "atm" });
+      const result = await validateTxnEvent({ ...VALID, channel_hint: "atm" }, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -252,7 +258,7 @@ describe("validateTxnEvent", () => {
         ...VALID,
         merchant: "   ",
         reference: "",
-      });
+      }, OPEN);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -278,5 +284,65 @@ describe("validateTxnEvent", () => {
         "account_id",
       ]);
     });
+  });
+});
+
+describe("the deployment fence", () => {
+  // /webhook is bypassed by Cloudflare Access on a real deployment, so the
+  // bearer token is its only guard. The fence limits what that token can reach.
+
+  it("restricts by default, with no scope passed", async () => {
+    // Fail closed: a caller that forgets to say which scope it wants gets the
+    // safe one, not the permissive one.
+    const result = await validateTxnEvent(VALID);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.map((error) => error.field)).toEqual(["account_id"]);
+    expect(result.errors[0].message).toContain("DEMO-");
+  });
+
+  it("rejects a real account id when fenced", async () => {
+    const result = await validateTxnEvent(VALID, { scope: "demo-accounts-only" });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts a DEMO- account id when fenced", async () => {
+    const result = await validateTxnEvent(
+      { ...VALID, account_id: "NABIL:DEMO-A1B2C3", event_id: "NABIL:71104582WxYz" },
+      { scope: "demo-accounts-only" },
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("is not fooled by a bank prefix that merely contains DEMO-", async () => {
+    // The prefix has to start the account label, not appear anywhere in the id.
+    const result = await validateTxnEvent(
+      { ...VALID, account_id: "NABIL:220XXDEMO-4417" },
+      { scope: "demo-accounts-only" },
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows any account when the fence is off", async () => {
+    const result = await validateTxnEvent(VALID, { scope: "any-account" });
+
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("isDemoAccount", () => {
+  it("recognises the ids the simulator creates", async () => {
+    expect(isDemoAccount("NIMB:DEMO-A1B2C3")).toBe(true);
+    expect(isDemoAccount("NABIL:DEMO-ZZ9999")).toBe(true);
+  });
+
+  it("rejects a real account, and anything without a bank prefix", async () => {
+    expect(isDemoAccount("NIMB:099XX4417")).toBe(false);
+    expect(isDemoAccount("DEMO-A1B2C3")).toBe(false);
+    expect(isDemoAccount("")).toBe(false);
   });
 });
