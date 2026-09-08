@@ -9,11 +9,13 @@ is invented, which is the standard `docs/images/README.md` requires.
 
 ## 0. Start from clean state
 
-```bash
-rm -rf .wrangler
+```powershell
+Remove-Item -Recurse -Force .wrangler -ErrorAction SilentlyContinue
 npm run db:local
 npm run dev
 ```
+
+POSIX: `rm -rf .wrangler && npm run db:local && npm run dev`
 
 **The `rm -rf .wrangler` is not optional.** Local emulation state persists across
 runs, and it holds rows written by earlier versions of the parsers. Bank

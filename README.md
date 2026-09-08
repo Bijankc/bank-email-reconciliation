@@ -271,12 +271,14 @@ This is the same discipline as versioned structured-message exchange in EDI, whe
 
 ### Locally
 
-```bash
+```powershell
 npm install
-cp .dev.vars.example .dev.vars     # then set SIMULATOR_TOKEN to any value
-npm run db:local                   # applies both migrations to the local D1
-npm run dev                        # wrangler dev, all bindings emulated locally
+Copy-Item .dev.vars.example .dev.vars   # then set both tokens to any values
+npm run db:local                        # applies both migrations to the local D1
+npm run dev                             # wrangler dev, all bindings emulated locally
 ```
+
+On POSIX shells, `cp .dev.vars.example .dev.vars`. The runbook is PowerShell-first; see its "Shell conventions" section for the four other differences that matter.
 
 Open <http://127.0.0.1:8787>. The simulator panel drives everything. It asks for `SIMULATOR_TOKEN`; accepting a gap asks for `OPERATOR_TOKEN`, which is a separate secret — both are in `.dev.vars`.
 

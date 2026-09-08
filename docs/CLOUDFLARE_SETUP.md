@@ -53,11 +53,13 @@ npx wrangler dev         # local emulation; no account, no login
 
 **Before any demo or screenshot run, start from clean state:**
 
-```bash
-rm -rf .wrangler
+```powershell
+Remove-Item -Recurse -Force .wrangler -ErrorAction SilentlyContinue
 npm run db:local
 npm run dev
 ```
+
+POSIX: `rm -rf .wrangler && npm run db:local && npm run dev`
 
 Local emulation state persists between runs and can hold rows written by an
 earlier version of the parsers - including `occurred_at` values on the old time
@@ -69,22 +71,213 @@ Durable Object, and projection as a real bank email would.
 
 ---
 
-## Step 1 — Create the account and log in
+## What changed after this runbook was first written
+
+Audited 2026-09-08 against the code as it stands. Steps 1 and 2 are unaffected —
+they touch no project config. The rest, so nothing is a surprise mid-deploy:
+
+| Step | What changed | Already updated below? |
+|---|---|---|
+| 3 — D1 | A second migration exists, `0002_gap_bounds.sql`. Both must be applied, in order | Yes |
+| 5 — Queues | `txn-events-dlq` now has its own consumer, declared in `wrangler.jsonc`. No extra `queues consumer add` is needed | Yes |
+| 6 — Secrets | **There are now two secrets**, `SIMULATOR_TOKEN` and `OPERATOR_TOKEN`, and they must differ. A deployment with only one set half-works and fails at the moment someone accepts a gap | Yes |
+| 6 — Health | `/health` now reports `operator_token` and `simulator_scope` alongside the original checks | Yes |
+| 6 — Smoke test | The example POST must use a `DEMO-` account id. `SIMULATOR_SCOPE` is `demo-accounts-only` on a deployment, so a real account id returns 422 by design | Yes |
+| 7 — Access | This step did not exist. It is required, and it must precede Step 8 | Yes |
+| 8 — Email Routing | No longer buys the domain; Step 1 does | Yes |
+
+Nothing in the runbook still assumes a single shared token or an unfenced
+simulator.
+
+---
+
+## Shell conventions — read once, saves five failures
+
+**Commands here are written for Windows PowerShell 5.1**, which is what this
+project is developed on. Where a POSIX form is meaningfully different it is
+given underneath. Four differences will bite otherwise, and the first two fail
+in ways that do not obviously point at the shell:
+
+**1. `curl` is not curl.** In PowerShell, `curl` is an alias for
+`Invoke-WebRequest`, so `curl -s -X POST ...` fails with:
+
+```
+Missing an argument for parameter 'SessionVariable'.
+```
+
+because `-s` is being read as a prefix of `-SessionVariable`. Real curl ships
+with Windows at `C:\Windows\system32\curl.exe`. **Always write `curl.exe`**, and
+every command below does.
+
+**2. `$HOST` is reserved.** PowerShell defines `$HOST` as the console host
+object and it is read-only:
+
+```
+Cannot overwrite variable Host because it is read-only or constant.
+```
+
+So the deployed hostname is held in `$WorkerHost` throughout this file, never
+`$HOST`.
+
+**3. `&&` does not exist in PowerShell 5.1.** Use `;` to sequence
+unconditionally, or `if ($?) { ... }` to run only on success.
+
+**5. PowerShell mangles inline JSON on its way to a native command.** Passing a
+JSON string straight to `curl.exe -d` looks right and is not — PowerShell 5.1
+rewrites the embedded double quotes before curl ever runs, and the Worker
+answers:
+
+```
+{ "error": "body must be valid JSON" }   HTTP 400
+```
+
+Write the body to a file and let curl read it with `-d "@file"`. Every POST in
+this runbook is written that way and each has been run:
+
+```powershell
+$body = '{"account_id":"NIMB:DEMO-X","bank":"NIMB"}'
+$body | Out-File -Encoding ascii -NoNewline "$env:TEMP\body.json"
+curl.exe -s -X POST "$WorkerHost/webhook" -H "content-type: application/json" -d "@$env:TEMP\body.json"
+```
+
+`Invoke-RestMethod -Body $body` also handles the quoting correctly and is more
+idiomatic, but it throws on any 4xx instead of printing the status code, and
+these checks are mostly about *which* status came back. Hence curl.
+
+**4. Unix file and text commands are not present.** The ones this runbook needs:
+
+| POSIX | PowerShell |
+|---|---|
+| `rm -rf .wrangler` | `Remove-Item -Recurse -Force .wrangler` |
+| `export FOO=bar` | `$env:FOO = "bar"` |
+| `... \| head -5` | `... \| Select-Object -First 5` |
+| `cp a b` | `Copy-Item a b` |
+
+Line continuation is a backtick `` ` `` in PowerShell, not a backslash. The
+commands below are written on single lines to avoid the issue entirely.
+
+---
+
+## Step 1 — Account, and the domain onto it
+
+This is the step that costs money: a domain is roughly $10/year and is the only
+paid dependency in the project. Everything after it is free tier.
+
+The domain is bought here rather than at the end, through **Cloudflare
+Registrar**, because a domain registered with Cloudflare is on Cloudflare
+nameservers from the moment it exists. Email Routing requires that — the
+documentation is explicit that you must be using Cloudflare DNS — and buying
+elsewhere means a nameserver change and a propagation wait before Step 8 can
+start.
+
+### 1.1 — The account
 
 1. Sign up at <https://dash.cloudflare.com/sign-up>. The Workers **free** plan
-   is sufficient for everything except the domain in Step 7.
-2. Authenticate the CLI:
+   covers everything in this project except the domain.
+2. Verify the email address Cloudflare sends you. Registrar will not sell you a
+   domain until the account email is verified.
+3. Authenticate the CLI:
 
-   ```bash
+   ```powershell
    npx wrangler login
    ```
 
-   Opens a browser for OAuth consent. Proves it worked:
+   Opens a browser for OAuth consent.
 
-   ```bash
-   npx wrangler whoami
-   # expect: your email and account id, not "You are not authenticated"
+**Checkable:**
+
+```powershell
+npx wrangler whoami
+```
+
+Prints your email and an Account ID. If it prints `You are not authenticated`,
+the login did not complete — re-run it and finish the browser consent.
+
+### 1.2 — Buy the domain through Cloudflare Registrar
+
+1. Dashboard → **Domain Registration** → **Register Domains**.
+2. Search for the name you want.
+3. **Check the TLD is offered by Cloudflare Registrar before settling on a
+   name.** Registrar does not sell every TLD, and this is the one decision here
+   that is genuinely annoying to reverse — see 1.3.
+4. Add to cart, enter registrant contact details and a payment method, and
+   complete the purchase.
+5. Leave **auto-renew on**. It is on by default.
+
+Cloudflare Registrar includes WHOIS redaction at no cost and it is on by
+default, so your name and address are not published. Nothing to configure.
+
+The zone is created automatically and, because the domain was registered here,
+it is already on Cloudflare nameservers. There is no "add a site" step, no
+nameserver change at another registrar, and no propagation wait.
+
+### 1.3 — What to get right now, because it is painful later
+
+**The TLD must be one Cloudflare Registrar sells.** If you buy elsewhere you
+have to point that registrar's nameservers at Cloudflare and wait for
+propagation, and a newly registered domain cannot be *transferred* to Cloudflare
+for 60 days under ICANN rules. That does not block anything — an external
+domain on Cloudflare nameservers works fine — but it turns a five-minute step
+into a wait, which is precisely what buying here avoids.
+
+**The zone must be a full setup, not a CNAME/partial setup.** Email Routing
+needs to manage the domain's MX records and cannot on a partial zone. A
+Registrar purchase is always full setup, so this is only a hazard if you buy
+elsewhere and configure the zone as partial.
+
+**Do not buy a domain that already has mail on it.** Enabling Email Routing adds
+MX, SPF and DKIM records at the zone apex. On a fresh domain there is nothing to
+collide with. On a domain already serving a mailbox, enabling routing will
+interfere with that mail. A brand-new name has no such history.
+
+**Keep the domain name out of this repository.** It is public. The domain will
+appear in your Access configuration, your Email Routing rule and your own
+commands, and none of those are files here. Do not paste it into the README,
+`wrangler.jsonc`, or this runbook — every example below uses a placeholder for
+that reason.
+
+**Auto-renew matters more than usual here.** If the domain lapses, Email Routing
+stops and forwarded bank alerts bounce silently. The engine would not report an
+error; it would simply stop receiving anything, which looks identical to an
+account with no transactions.
+
+### 1.4 — What "Step 1 is done" looks like
+
+Four things, each of which you can check rather than assume:
+
+1. Dashboard → **Websites** lists your domain, status **Active**.
+   Not "Pending Nameserver Update" — a Registrar purchase should go straight to
+   Active, usually within a minute or two.
+2. Dashboard → **Domain Registration** → your domain shows **Auto-renew: On**
+   and an expiry roughly a year out.
+3. The zone answers DNS as a Cloudflare zone:
+
+   ```powershell
+   nslookup -type=NS yourdomain.tld 1.1.1.1
    ```
+
+   Returns two `*.ns.cloudflare.com` nameservers. If it returns anything else,
+   or `NXDOMAIN`, the zone is not live yet — wait and re-check before going on.
+
+4. The CLI is authenticated against the account that owns it:
+
+   ```powershell
+   npx wrangler whoami
+   ```
+
+   Prints an email and Account ID with no error.
+
+**Do not enable Email Routing yet.** It is Step 8, and Step 7 (Cloudflare
+Access) has to be in place first — the read API is unauthenticated by design,
+and Step 8 is what causes real balances to start arriving. That ordering is the
+one thing in this runbook that cannot be safely rearranged.
+
+### 1.5 — What has *not* happened yet
+
+Nothing remote exists beyond the account and the domain. No D1 database, no R2
+bucket, no queues, no secrets, no Worker. `wrangler.jsonc` still carries the
+literal `REPLACE_WITH_D1_DATABASE_ID` placeholder, and `npm run dev` still runs
+entirely locally. Step 3 onwards is where remote resources start being created.
 
 ---
 
@@ -93,10 +286,14 @@ Durable Object, and projection as a real bank email would.
 `wrangler whoami` prints an Account ID. If it lists more than one account,
 export the one you want so no command has to guess:
 
-```bash
-export CLOUDFLARE_ACCOUNT_ID=<account id from whoami>    # bash
-$env:CLOUDFLARE_ACCOUNT_ID = "<account id from whoami>"  # PowerShell
+```powershell
+$env:CLOUDFLARE_ACCOUNT_ID = "<account id from whoami>"
 ```
+
+POSIX: `export CLOUDFLARE_ACCOUNT_ID=<account id from whoami>`
+
+This lasts for the current shell session only. Re-set it in each new terminal,
+or the commands that create resources may prompt you to pick an account.
 
 Do not put the account id in `wrangler.jsonc`. It is account-scoped and this
 repository is public.
@@ -191,7 +388,7 @@ npx wrangler queues list
 
 ---
 
-## Step 6 — Set the simulator secret and deploy
+## Step 6 — Set both secrets and deploy
 
 ```bash
 npx wrangler secret put SIMULATOR_TOKEN
@@ -230,33 +427,51 @@ npx wrangler deploy
 
 Proves it worked (replace the host with the deployed workers.dev host):
 
-```bash
-curl -s https://bank-email-reconciliation.<subdomain>.workers.dev/health
+```powershell
+$WorkerHost = "https://bank-email-reconciliation.<subdomain>.workers.dev"
+curl.exe -s "$WorkerHost/health"
 # expect ok:true with d1, r2, durable_object and queue_producer all "ok";
 # simulator_token AND operator_token both "configured"; and
 # simulator_scope "demo-accounts-only"
 ```
 
-Then prove the async path end to end, which is what Phase 2 built (this is
-deferred rows D5, D16 and D17):
+Then prove the async path end to end (deferred rows D5, D16 and D17). Set the
+host and token once; `$WorkerHost`, not `$HOST`, because `$HOST` is read-only in
+PowerShell:
+
+```powershell
+$WorkerHost = "https://bank-email-reconciliation.<subdomain>.workers.dev"
+$SimToken   = "<the SIMULATOR_TOKEN you generated above>"
+
+$body = '{"account_id":"NIMB:DEMO-SMOKE1","bank":"NIMB","direction":"DEBIT","amount_paisa":200000,"reported_balance_paisa":806055,"occurred_at":"2026-03-12T16:45:00Z","reference":"55123909QqRs"}'
+$body | Out-File -Encoding ascii -NoNewline "$env:TEMP\body.json"
+
+curl.exe -s -w "`nHTTP %{http_code}`n" -X POST "$WorkerHost/webhook" -H "authorization: Bearer $SimToken" -H "content-type: application/json" -d "@$env:TEMP\body.json"
+```
+
+Expect `202` and a body carrying `"accepted":true` and
+`"event_id":"NIMB:55123909QqRs"`.
+
+Note the account id is `NIMB:DEMO-SMOKE1`, not a real one. The deployed
+`SIMULATOR_SCOPE` restricts `/webhook` to `DEMO-` accounts, so a real account id
+here returns `422` naming `account_id` — that is the fence working, not a
+failure.
+
+POSIX form of the same call:
 
 ```bash
-HOST=https://bank-email-reconciliation.<subdomain>.workers.dev
-TOKEN=<the value you generated above>
-
-curl -s -X POST "$HOST/webhook"   -H "authorization: Bearer $TOKEN"   -H "content-type: application/json"   -d '{"account_id":"NABIL:220XXXXXX881904","bank":"NABIL","direction":"DEBIT",
-       "amount_paisa":200000,"reported_balance_paisa":806055,
-       "occurred_at":"2026-03-12T16:45:00Z","reference":"55123909QqRs"}'
-# expect HTTP 202 and {"accepted":true,"event_id":"NABIL:55123909QqRs",...}
+WORKER_HOST=https://bank-email-reconciliation.<subdomain>.workers.dev
+SIM_TOKEN=<the SIMULATOR_TOKEN you generated above>
+curl -s -w '\nHTTP %{http_code}\n' -X POST "$WORKER_HOST/webhook" -H "authorization: Bearer $SIM_TOKEN" -H "content-type: application/json" -d '{"account_id":"NIMB:DEMO-SMOKE1","bank":"NIMB","direction":"DEBIT","amount_paisa":200000,"reported_balance_paisa":806055,"occurred_at":"2026-03-12T16:45:00Z","reference":"55123909QqRs"}'
 ```
 
 With `npx wrangler tail` running in another terminal you should see, within a
 few seconds, `queue.received` and then `audit.written` carrying the key
-`raw/NABIL:220XXXXXX881904/NABIL:55123909QqRs.json`. Fetch the object to
-confirm the audit store really has it:
+`raw/NIMB:DEMO-SMOKE1/NIMB:55123909QqRs.json`. Fetch the object to confirm the
+audit store really has it:
 
-```bash
-npx wrangler r2 object get bank-recon-audit   "raw/NABIL:220XXXXXX881904/NABIL:55123909QqRs.json" --remote --file=./audit-check.json
+```powershell
+npx wrangler r2 object get bank-recon-audit "raw/NIMB:DEMO-SMOKE1/NIMB:55123909QqRs.json" --remote --file=./audit-check.json
 ```
 
 Re-POST the identical body once more: the second pass must log `audit.exists`
@@ -275,10 +490,12 @@ There is **no separate Pages project to create.** `public/` is configured as the
 Worker's static assets in `wrangler.jsonc`, so `wrangler deploy` ships the
 dashboard and the API together on one origin. After Step 6:
 
-```bash
-curl -sI https://bank-email-reconciliation.<subdomain>.workers.dev/ | head -3
+```powershell
+curl.exe -sI "$WorkerHost/" | Select-Object -First 3
 # expect 200 and content-type: text/html
 ```
+
+POSIX: `curl -sI "$WORKER_HOST/" | head -3`
 
 Then open that URL in a browser. This is deferred rows D24 and D25.
 
@@ -374,62 +591,79 @@ also still require the bearer token underneath.
 
 Logged out, from a terminal with no Access cookie:
 
-```bash
-HOST=https://bank-email-reconciliation.<subdomain>.workers.dev
+```powershell
+$WorkerHost = "https://bank-email-reconciliation.<subdomain>.workers.dev"
 
-curl -si "$HOST/api/accounts" | head -5
-# EXPECT: HTTP/2 302 and a `location:` header pointing at
-#   https://<your-team>.cloudflareaccess.com/cdn-cgi/access/login/...
-# FAIL:   HTTP/2 200 and a JSON body containing "accounts". If you see account
-#         data here, Access is not covering the route. Do not continue to Step 8.
-
-curl -si "$HOST/" | head -5
-# EXPECT: the same 302 to the Access login.
+curl.exe -si "$WorkerHost/api/accounts" | Select-Object -First 5
 ```
+
+EXPECT: `HTTP/2 302` and a `location:` header pointing at
+`https://<your-team>.cloudflareaccess.com/cdn-cgi/access/login/...`
+
+FAIL: `HTTP/2 200` and a JSON body containing `"accounts"`. If account data
+comes back here, Access is not covering the route. **Do not continue to Step 8.**
+
+```powershell
+curl.exe -si "$WorkerHost/" | Select-Object -First 5
+```
+
+EXPECT: the same 302 to the Access login.
 
 Then confirm the bypass did not break the simulator:
 
-```bash
-curl -s -o /dev/null -w "%{http_code}
-" -X POST "$HOST/webhook"   -H "authorization: Bearer $TOKEN"   -H "content-type: application/json"   -d '{"account_id":"NIMB:DEMO-ACCESS","bank":"NIMB","direction":"DEBIT",
-       "amount_paisa":50000,"reported_balance_paisa":950000,
-       "occurred_at":"2026-04-01T09:00:00Z","reference":"accesscheck01"}'
-# EXPECT: 202. The event is queued.
-# FAIL:   302 — Application A is missing, or its path does not match /webhook.
-#         The simulator panel will be broken in the browser too.
+```powershell
+$SimToken = "<your SIMULATOR_TOKEN>"
+$body = '{"account_id":"NIMB:DEMO-ACCESS","bank":"NIMB","direction":"DEBIT","amount_paisa":50000,"reported_balance_paisa":950000,"occurred_at":"2026-04-01T09:00:00Z","reference":"accesscheck01"}'
+$body | Out-File -Encoding ascii -NoNewline "$env:TEMP\body.json"
 
-curl -s -o /dev/null -w "%{http_code}
-" -X POST "$HOST/webhook"   -H "content-type: application/json" -d '{}'
-# EXPECT: 401. The bypass removes the Access login, not the bearer check.
+curl.exe -s -o NUL -w "%{http_code}`n" -X POST "$WorkerHost/webhook" -H "authorization: Bearer $SimToken" -H "content-type: application/json" -d "@$env:TEMP\body.json"
 ```
 
-Finally, open `$HOST/` in a browser: you should get a one-time-PIN prompt,
+EXPECT: `202`. The event is queued.
+
+FAIL: `302` — Application A is missing, or its path does not match `/webhook`.
+The simulator panel will be broken in the browser too.
+
+```powershell
+curl.exe -s -o NUL -w "%{http_code}`n" -X POST "$WorkerHost/webhook" -H "content-type: application/json" -d "{}"
+```
+
+(`{}` has no inner quotes, so it survives PowerShell's argument handling and
+needs no file.)
+
+EXPECT: `401`. The bypass removes the Access login, not the bearer check.
+
+Finally, open `$WorkerHost` in a browser: you should get a one-time-PIN prompt,
 receive a code by email, and land on the dashboard.
 
 Only when all four of those behave as described, continue to Step 8.
 
 ---
 
-## Step 8 — Domain and Email Routing (LAST; costs money)
+## Step 8 — Email Routing (LAST; this is what makes the data real)
 
-This is the only paid dependency in the project (~$10/yr) and the only step that
-cannot be done without it. Everything above is free tier.
+The domain was bought and the zone created in Step 1, so this step is only about
+turning routing on and pointing an address at the Worker.
 
-1. **Buy or transfer a domain.** Cloudflare Registrar (dashboard → *Domain
-   Registration*) is simplest because the nameservers are already correct. Any
-   registrar works if you then point the nameservers at Cloudflare.
-2. **Add the zone**: dashboard → *Add a site* → enter the domain → Free plan →
-   follow the nameserver instructions. Wait for the zone to read **Active**.
-3. **Enable Email Routing**: dashboard → the zone → *Email* → *Email Routing* →
+**Do not start this step until Step 7 is verified.** From the first forwarded
+alert, this Worker holds real balances, real merchants and a real masked account
+number, and the read API is unauthenticated by design. Access has to be in front
+of it first.
+
+1. *(Done in Step 1.)* The domain is registered with Cloudflare Registrar and
+   the zone is Active on Cloudflare nameservers. If you bought elsewhere,
+   confirm the zone reads **Active** before continuing — Email Routing requires
+   the domain to be using Cloudflare DNS.
+2. **Enable Email Routing**: dashboard → the zone → *Email* → *Email Routing* →
    *Get started*. Cloudflare adds the required MX, SPF, and DKIM records for
    you. Wait for the status to read **Enabled**.
-4. **Verify a destination address** (needed only if you also forward to a real
+3. **Verify a destination address** (needed only if you also forward to a real
    mailbox): *Destination addresses* → add your personal address → click the
    link in the confirmation email Cloudflare sends.
-5. **Route an address to this Worker**: *Email Routing* → *Routes* → *Create
+4. **Route an address to this Worker**: *Email Routing* → *Routes* → *Create
    address* → e.g. `alerts@yourdomain.tld` → Action: **Send to a Worker** →
    select `bank-email-reconciliation`.
-6. **Forward the bank alerts**: in Gmail, *Settings → Forwarding and POP/IMAP →
+5. **Forward the bank alerts**: in Gmail, *Settings → Forwarding and POP/IMAP →
    Add a forwarding address* → `alerts@yourdomain.tld`. Gmail sends a
    confirmation code to that address; because the address routes to the Worker
    and not to a mailbox, temporarily add a second route sending it to your
